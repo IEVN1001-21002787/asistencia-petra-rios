@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Asistencia Petra Ríos</title>
+<meta name="theme-color" content="#1F3864">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Asistencia">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="config.js"></script>
+</head>
+<body>
+<header>
+  <div class="fila">
+    <div class="crece"><b id="escuela">Asistencia escolar</b><small id="quien"></small></div>
+    <button id="salir" class="salir hidden" onclick="cerrarSesion()">Salir</button>
+  </div>
+</header>
+<div id="banner" class="banner hidden"></div>
+<main id="main"><div class="cargando">Cargando…</div></main>
+<nav id="nav"></nav>
+
+<div id="login" class="hidden">
+  <div class="caja">
+    <img src="icon-192.png" alt="">
+    <h2 style="margin:12px 0 4px">Asistencia escolar</h2>
+    <div class="tenue" id="loginEscuela">Escuela Secundaria Oficial "Petra Ríos"</div>
+    <p style="font-size:14px">Entra con la cuenta de Google de tu correo @seg-gto.gob.mx.</p>
+    <div id="gbtn"></div>
+    <div id="loginMsg" class="tenue mal" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="modal" class="modal hidden" onclick="if(event.target===this)cerrar()"><div class="caja" id="modalBody"></div></div>
+<div id="toast" class="toast hidden"></div>
+<div id="print"></div>
+<script src="app.js"></script>
+</body>
+</html>
