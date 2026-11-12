@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.2';
+const VERSION = '2.3';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -24,6 +24,9 @@ const HOJAS = {
   Seguimiento: ['ID_Seg', 'Fecha', 'ID_Alumno', 'Tipo', 'Motivo', 'Resultado', 'Detalle', 'Registro'],
   Calendario: ['Fecha', 'Tipo', 'Descripcion'],
   Bitacora: ['Fecha_Hora', 'Usuario', 'Accion', 'Detalle'],
+  Personal: ['ID_Personal', 'Nombre', 'Puesto', 'Asignatura', 'Activo', 'Notas'],
+  Incidencias_Personal: ['ID_Inc', 'Fecha_Inicio', 'Fecha_Fin', 'ID_Personal', 'Tipo', 'Hora', 'Horas_Clase', 'Grupos',
+    'Cubrio', 'Documento', 'Comentario', 'Estatus', 'Registro', 'Fecha_Registro', 'Actualizado'],
 };
 
 const IMPORTAR_ENCABEZADOS = ['Apellido_Paterno', 'Apellido_Materno', 'Nombres', 'CURP', 'Grupo',
@@ -62,7 +65,20 @@ const PERMISOS = {
   seguimiento: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO', 'TRABAJO_SOCIAL'],
   alumnos: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'],
   calendario: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'],
+  personal: ['ADMIN', 'SUBDIRECTOR', 'PREFECTO'],
 };
+
+/** Incidencias del personal. "rango" = puede durar varios días; "hora" = pide la hora. */
+const TIPOS_INCIDENCIA = {
+  FALTA: { t: 'Falta', rango: true },
+  RETARDO: { t: 'Retardo', hora: true },
+  SALIDA: { t: 'Salida antes de tiempo', hora: true },
+  LICENCIA_MEDICA: { t: 'Licencia médica', rango: true },
+  PERMISO: { t: 'Permiso', rango: true },
+  COMISION: { t: 'Comisión', rango: true },
+  OTRO: { t: 'Otro', rango: true },
+};
+const PUESTOS = ['Docente', 'Directivo', 'Administrativo', 'Prefectura', 'Trabajo social', 'Apoyo', 'Intendencia'];
 
 const TIPOS_SIN_CLASE = {
   FESTIVO: 'Día festivo', SUSPENSION: 'Suspensión de labores', CTE: 'Consejo Técnico Escolar',
@@ -86,6 +102,9 @@ const ACCIONES = {
   apiCalendario: apiCalendario, apiMarcarSinClase: apiMarcarSinClase, apiQuitarSinClase: apiQuitarSinClase,
   apiGuardarCiclo: apiGuardarCiclo,
   apiDatosSinConexion: apiDatosSinConexion,
+  apiPersonal: apiPersonal, apiGuardarPersona: apiGuardarPersona, apiRegistrarIncidencia: apiRegistrarIncidencia,
+  apiCancelarIncidencia: apiCancelarIncidencia, apiReportePersonal: apiReportePersonal,
+  apiHistorialPersona: apiHistorialPersona, apiExportarPersonal: apiExportarPersonal,
 };
 
 let _correoActual = null;
@@ -163,7 +182,16 @@ function ss_() {
 }
 
 function sh_(nombre) {
-  const s = ss_().getSheetByName(nombre);
+  const ss = ss_();
+  let s = ss.getSheetByName(nombre);
+  if (!s && HOJAS[nombre]) {
+    // Pestañas nuevas de una actualización: se crean solas la primera vez.
+    s = ss.insertSheet(nombre);
+    const h = HOJAS[nombre];
+    s.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold').setBackground('#1F3864').setFontColor('#FFFFFF');
+    s.setFrozenRows(1);
+    s.getRange(1, 1, Math.max(s.getMaxRows(), 2), h.length).setNumberFormat('@');
+  }
   if (!s) throw new Error('Falta la pestaña "' + nombre + '". Ejecuta Plataforma > Configurar hojas.');
   return s;
 }
@@ -1100,6 +1128,215 @@ function apiExportarConcentrado(grupo, ini, fin) {
     nombre: 'Concentrado_' + grupo + '_' + c.inicio + '_a_' + c.fin + '.csv',
     csv: lineas.map(function (l) { return l.map(celda).join(','); }).join('\r\n'),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* API: personal (faltas, retardos, licencias de maestros)             */
+/* Solo prefectura, subdirección y administración.                     */
+/* ------------------------------------------------------------------ */
+
+function persona_(p) {
+  return { id: p.ID_Personal, nombre: p.Nombre, puesto: p.Puesto, asignatura: p.Asignatura,
+    activo: String(p.Activo).toUpperCase() !== 'NO', notas: p.Notas };
+}
+
+function mapaPersonal_() {
+  const m = {};
+  tabla_('Personal').forEach(function (p) { m[p.ID_Personal] = p; });
+  return m;
+}
+
+function incidencia_(r, mp) {
+  const p = mp[r.ID_Personal];
+  const tipo = TIPOS_INCIDENCIA[r.Tipo] ? r.Tipo : 'OTRO';
+  return { id: r.ID_Inc, inicio: r.Fecha_Inicio, fin: r.Fecha_Fin || r.Fecha_Inicio, idPersona: r.ID_Personal,
+    nombre: p ? p.Nombre : r.ID_Personal, puesto: p ? p.Puesto : '', tipo: tipo, tipoTexto: TIPOS_INCIDENCIA[tipo].t,
+    hora: r.Hora, horasClase: r.Horas_Clase, grupos: r.Grupos, cubrio: r.Cubrio, documento: r.Documento,
+    comentario: r.Comentario, registro: r.Registro, fechaRegistro: r.Fecha_Registro };
+}
+
+function incidenciasVigentes_() {
+  return tabla_('Incidencias_Personal').filter(function (r) { return r.Estatus !== 'CANCELADA'; });
+}
+
+function apiPersonal() {
+  requiere_('personal');
+  const hoy = hoy_();
+  const mp = mapaPersonal_();
+  const personas = tabla_('Personal').map(persona_).sort(function (a, b) { return a.nombre.localeCompare(b.nombre, 'es'); });
+  const deHoy = incidenciasVigentes_().filter(function (r) { return r.Fecha_Inicio <= hoy && (r.Fecha_Fin || r.Fecha_Inicio) >= hoy; })
+    .map(function (r) { return incidencia_(r, mp); });
+  const tipos = {};
+  Object.keys(TIPOS_INCIDENCIA).forEach(function (k) { tipos[k] = TIPOS_INCIDENCIA[k]; });
+  return { personas: personas, hoy: deHoy, tipos: tipos, puestos: PUESTOS };
+}
+
+/** d: {id?, nombre, puesto, asignatura, activo, notas} */
+function apiGuardarPersona(d) {
+  const u = requiere_('personal');
+  const nombre = String(d.nombre || '').trim().replace(/\s+/g, ' ').toUpperCase();
+  if (nombre.length < 3) throw new Error('Escribe el nombre completo.');
+  const datos = { Nombre: nombre, Puesto: String(d.puesto || 'Docente').slice(0, 40), Asignatura: String(d.asignatura || '').trim().slice(0, 80),
+    Activo: d.activo === false ? 'NO' : 'SI', Notas: String(d.notas || '').trim().slice(0, 200) };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const todos = tabla_('Personal');
+    if (d.id) {
+      const p = todos.find(function (x) { return x.ID_Personal === d.id; });
+      if (!p) throw new Error('No se encontró a esa persona.');
+      actualizar_('Personal', p._fila, datos);
+      log_(u, 'PERSONAL', 'Editó ' + d.id + ' ' + nombre);
+      return { id: d.id };
+    }
+    if (todos.some(function (x) { return norm_(x.Nombre) === norm_(nombre); })) throw new Error('Ya existe una persona con ese nombre.');
+    let max = 0;
+    todos.forEach(function (x) { const n = parseInt(String(x.ID_Personal).replace(/\D/g, ''), 10); if (n > max) max = n; });
+    const id = 'M' + String(max + 1).padStart(3, '0');
+    datos.ID_Personal = id;
+    agregar_('Personal', [datos]);
+    log_(u, 'PERSONAL', 'Alta ' + id + ' ' + nombre);
+    return { id: id };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** d: {idPersona, tipo, inicio, fin?, hora?, horasClase?, grupos?, cubrio?, documento?, comentario?} */
+function apiRegistrarIncidencia(d) {
+  const u = requiere_('personal');
+  const p = tabla_('Personal').find(function (x) { return x.ID_Personal === d.idPersona; });
+  if (!p) throw new Error('Selecciona a la persona.');
+  const def = TIPOS_INCIDENCIA[d.tipo];
+  if (!def) throw new Error('Selecciona el tipo de incidencia.');
+  const ini = validarFecha_(d.inicio || hoy_(), 'fecha');
+  const fin = def.rango ? validarFecha_(d.fin || ini, 'hasta') : ini;
+  if (fin < ini) throw new Error('La fecha final no puede ser antes de la inicial.');
+  if (Math.round((parseF_(fin) - parseF_(ini)) / 86400000) > 366) throw new Error('El periodo no puede pasar de un año.');
+  if (!def.rango && ini > hoy_()) throw new Error('Un ' + def.t.toLowerCase() + ' no puede ser de una fecha futura.');
+  const hora = String(d.hora || '').trim();
+  if (def.hora && !/^\d{1,2}:\d{2}$/.test(hora)) throw new Error('Escribe la hora.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    // Si se manda dos veces (por ejemplo, desde la cola sin internet), no se duplica.
+    const repetida = incidenciasVigentes_().find(function (r) {
+      return r.ID_Personal === p.ID_Personal && r.Tipo === d.tipo && r.Fecha_Inicio === ini && (r.Fecha_Fin || r.Fecha_Inicio) === fin;
+    });
+    if (repetida) return { id: repetida.ID_Inc, repetida: true };
+    const id = nuevoId_('I');
+    agregar_('Incidencias_Personal', [{ ID_Inc: id, Fecha_Inicio: ini, Fecha_Fin: fin, ID_Personal: p.ID_Personal, Tipo: d.tipo,
+      Hora: def.hora ? hora : '', Horas_Clase: String(d.horasClase || '').replace(/[^\d]/g, '').slice(0, 2),
+      Grupos: String(d.grupos || '').slice(0, 60), Cubrio: String(d.cubrio || '').slice(0, 80),
+      Documento: String(d.documento || '').slice(0, 80), Comentario: String(d.comentario || '').slice(0, 300),
+      Estatus: 'VIGENTE', Registro: u.email, Fecha_Registro: sello_(), Actualizado: '' }]);
+    log_(u, 'INCIDENCIA_PERSONAL', p.ID_Personal + ' ' + d.tipo + ' ' + ini + (fin !== ini ? ' a ' + fin : ''));
+    return { id: id, dias: habilesEntre_(ini, fin).length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** No se borra: queda como CANCELADA con el motivo. */
+function apiCancelarIncidencia(id, motivo) {
+  const u = requiere_('personal');
+  if (!String(motivo || '').trim()) throw new Error('Escribe por qué se cancela.');
+  _cache = {};
+  const r = tabla_('Incidencias_Personal').find(function (x) { return x.ID_Inc === id; });
+  if (!r || r.Estatus === 'CANCELADA') throw new Error('No se encontró el registro.');
+  actualizar_('Incidencias_Personal', r._fila, { Estatus: 'CANCELADA', Actualizado: sello_() + ' ' + u.email + ': ' + String(motivo).slice(0, 150) });
+  log_(u, 'INCIDENCIA_PERSONAL', 'Canceló ' + id + ': ' + motivo);
+  return { ok: true };
+}
+
+/** Días hábiles de una incidencia que caen entre ini y fin. */
+function diasIncidencia_(r, ini, fin, sin) {
+  const a = r.Fecha_Inicio > ini ? r.Fecha_Inicio : ini;
+  const fr = r.Fecha_Fin || r.Fecha_Inicio;
+  const b = fr < fin ? fr : fin;
+  if (b < a) return 0;
+  let n = 0;
+  const x = parseF_(a), y = parseF_(b);
+  let vueltas = 0;
+  while (x <= y && vueltas < 400) { if (esHabil_(fmtF_(x), sin)) n++; x.setDate(x.getDate() + 1); vueltas++; }
+  return n;
+}
+
+function apiReportePersonal(ini, fin) {
+  requiere_('personal');
+  if (!ini || !fin) { const q = quincena_(hoy_()); ini = q[0]; fin = q[1]; }
+  validarFecha_(ini); validarFecha_(fin);
+  if (fin < ini) throw new Error('La fecha final no puede ser antes de la inicial.');
+  const sin = diasSinClase_();
+  const mp = mapaPersonal_();
+  const tot = {};
+  const detalle = [];
+  incidenciasVigentes_().forEach(function (r) {
+    const fr = r.Fecha_Fin || r.Fecha_Inicio;
+    if (fr < ini || r.Fecha_Inicio > fin) return;
+    const tipo = TIPOS_INCIDENCIA[r.Tipo] ? r.Tipo : 'OTRO';
+    // Un retardo o salida cuenta 1; lo demás cuenta los días hábiles dentro del periodo.
+    const n = TIPOS_INCIDENCIA[tipo].rango ? diasIncidencia_(r, ini, fin, sin) : 1;
+    const t = tot[r.ID_Personal] = tot[r.ID_Personal] || {};
+    t[tipo] = (t[tipo] || 0) + n;
+    const o = incidencia_(r, mp);
+    o.dias = n;
+    detalle.push(o);
+  });
+  detalle.sort(function (a, b) { return a.inicio.localeCompare(b.inicio) || a.nombre.localeCompare(b.nombre, 'es'); });
+  const filas = Object.keys(mp).map(function (id) { return mp[id]; })
+    .filter(function (p) { return String(p.Activo).toUpperCase() !== 'NO' || tot[p.ID_Personal]; })
+    .sort(function (a, b) { return a.Nombre.localeCompare(b.Nombre, 'es'); })
+    .map(function (p, i) {
+      const t = tot[p.ID_Personal] || {};
+      const totales = {};
+      Object.keys(TIPOS_INCIDENCIA).forEach(function (k) { totales[k] = t[k] || 0; });
+      return { num: i + 1, id: p.ID_Personal, nombre: p.Nombre, puesto: p.Puesto, asignatura: p.Asignatura, totales: totales,
+        conIncidencias: !!tot[p.ID_Personal] };
+    });
+  const tipos = {};
+  Object.keys(TIPOS_INCIDENCIA).forEach(function (k) { tipos[k] = TIPOS_INCIDENCIA[k].t; });
+  return { inicio: ini, fin: fin, habiles: habilesEntre_(ini, fin).length, filas: filas, detalle: detalle, tipos: tipos, ciclo: config_().CICLO };
+}
+
+/** Todas las incidencias de una persona en el ciclo (o desde el inicio si no hay ciclo). */
+function apiHistorialPersona(id) {
+  requiere_('personal');
+  const mp = mapaPersonal_();
+  const p = mp[id];
+  if (!p) throw new Error('No se encontró a esa persona.');
+  const c = config_();
+  const ini = /^\d{4}-\d{2}-\d{2}$/.test(c.INICIO_CICLO || '') ? c.INICIO_CICLO : '2000-01-01';
+  const fin = /^\d{4}-\d{2}-\d{2}$/.test(c.FIN_CICLO || '') ? c.FIN_CICLO : '2999-12-31';
+  const sin = diasSinClase_();
+  const totales = {};
+  Object.keys(TIPOS_INCIDENCIA).forEach(function (k) { totales[k] = 0; });
+  const lista = incidenciasVigentes_().filter(function (r) { return r.ID_Personal === id && (r.Fecha_Fin || r.Fecha_Inicio) >= ini && r.Fecha_Inicio <= fin; })
+    .map(function (r) {
+      const o = incidencia_(r, mp);
+      o.dias = TIPOS_INCIDENCIA[o.tipo].rango ? diasIncidencia_(r, ini, fin, sin) : 1;
+      totales[o.tipo] += o.dias;
+      return o;
+    })
+    .sort(function (a, b) { return b.inicio.localeCompare(a.inicio); });
+  return { persona: persona_(p), incidencias: lista, totales: totales, ciclo: c.CICLO };
+}
+
+function apiExportarPersonal(ini, fin) {
+  const r = apiReportePersonal(ini, fin);
+  const celda = function (v) { const t = String(v === undefined ? '' : v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const claves = Object.keys(r.tipos);
+  const lineas = [['Incidencias del personal del ' + r.inicio + ' al ' + r.fin + ' (' + r.habiles + ' días hábiles)'],
+    ['#', 'Nombre', 'Puesto', 'Asignatura'].concat(claves.map(function (k) { return r.tipos[k] + (TIPOS_INCIDENCIA[k].rango ? ' (días)' : ''); }))]
+    .concat(r.filas.map(function (f) { return [f.num, f.nombre, f.puesto, f.asignatura].concat(claves.map(function (k) { return f.totales[k]; })); }))
+    .concat([[''], ['Detalle'], ['Desde', 'Hasta', 'Nombre', 'Tipo', 'Días', 'Hora', 'Horas de clase', 'Grupos', 'Cubrió', 'Documento', 'Comentario', 'Registró']])
+    .concat(r.detalle.map(function (d) {
+      return [d.inicio, d.fin, d.nombre, d.tipoTexto, d.dias, d.hora, d.horasClase, d.grupos, d.cubrio, d.documento, d.comentario, d.registro];
+    }));
+  return { nombre: 'Incidencias_personal_' + r.inicio + '_a_' + r.fin + '.csv',
+    csv: lineas.map(function (l) { return l.map(celda).join(','); }).join('\r\n') };
 }
 
 /* ------------------------------------------------------------------ */

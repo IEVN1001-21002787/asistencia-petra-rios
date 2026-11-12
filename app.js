@@ -71,6 +71,7 @@ const ICONOS = {
   reportes: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5',
   reloj: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
   mas: 'M12 5v14M5 12h14',
+  personal: 'M20 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2M2 13h20',
 };
 function svg(nombre, tam, color) {
   return '<svg width="' + (tam || 20) + '" height="' + (tam || 20) + '" viewBox="0 0 24 24" fill="none" stroke="' + (color || 'currentColor') +
@@ -125,7 +126,8 @@ window.addEventListener('offline', banner);
 /* ---------------- Navegación ---------------- */
 const VISTAS = [
   { id: 'hoy', t: 'Hoy', p: 'ver' }, { id: 'lista', t: 'Lista', p: 'lista' }, { id: 'salidas', t: 'Salidas', p: 'salidas' },
-  { id: 'alumnos', t: 'Alumnos', p: 'ver' }, { id: 'alertas', t: 'Alertas', p: 'ver' }, { id: 'reportes', t: 'Reportes', p: 'ver' },
+  { id: 'alumnos', t: 'Alumnos', p: 'ver' }, { id: 'alertas', t: 'Alertas', p: 'ver' }, { id: 'personal', t: 'Personal', p: 'personal' },
+  { id: 'reportes', t: 'Reportes', p: 'ver' },
 ];
 function pintarNav() {
   $('#nav').innerHTML = VISTAS.filter((v) => puede(v.p))
@@ -135,9 +137,9 @@ function ir(v, arg) {
   S.vista = v;
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.id === 'nav-' + v));
   window.scrollTo(0, 0);
-  const t = { hoy: 'Hoy', lista: 'Pasar lista', salidas: 'Salidas', alumnos: 'Alumnos', alertas: 'Alertas', reportes: 'Reportes' };
+  const t = { hoy: 'Hoy', lista: 'Pasar lista', salidas: 'Salidas', alumnos: 'Alumnos', alertas: 'Alertas', personal: 'Personal', reportes: 'Reportes' };
   cab(fechaLarga(S.ini.hoy), t[v]);
-  ({ hoy: vHoy, lista: vLista, salidas: vSalidas, alumnos: vAlumnos, alertas: vAlertas, reportes: vReportes }[v])(arg);
+  ({ hoy: vHoy, lista: vLista, salidas: vSalidas, alumnos: vAlumnos, alertas: vAlertas, personal: vPersonal, reportes: vReportes }[v])(arg);
 }
 
 /* ---------------- Selector de alumno ---------------- */
@@ -774,6 +776,206 @@ async function exportar() {
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
     toast('Archivo descargado: ' + r.nombre + '. Ábrelo con Excel.');
   } catch (e) { error(e); }
+}
+
+/* ---------------- Vista: Personal (solo prefectura y subdirección) ---------------- */
+const TIPO_CIRC = { FALTA: 'F', RETARDO: 'R', SALIDA: 'S', LICENCIA_MEDICA: 'J', PERMISO: 'S', COMISION: 'S', OTRO: 'S' };
+const TIPO_CORTO = { FALTA: 'Faltas', RETARDO: 'Retardos', SALIDA: 'Salidas', LICENCIA_MEDICA: 'Licencia', PERMISO: 'Permiso', COMISION: 'Comisión', OTRO: 'Otro' };
+function txtInc(i) {
+  const fechas = i.fin && i.fin !== i.inicio ? fC(i.inicio) + ' al ' + fC(i.fin) : fC(i.inicio);
+  return [fechas, i.hora ? i.hora : '', i.horasClase ? i.horasClase + ' h de clase' : '', i.grupos, i.cubrio ? 'cubrió ' + i.cubrio : '', i.documento]
+    .filter(Boolean).join(' · ');
+}
+async function vPersonal() {
+  cargando();
+  try {
+    let P;
+    try { P = await api('apiPersonal'); guardarLocal('personal', P); }
+    catch (e) { if (!e.red || !leerLocal('personal')) throw e; P = leerLocal('personal'); toast('Sin internet: se muestra la última información guardada.'); }
+    S.per = P;
+    S.perRep = S.perRep || { ini: quincena(S.ini.hoy)[0], fin: quincena(S.ini.hoy)[1] };
+    const activos = P.personas.filter((p) => p.activo);
+    const hoyF = P.hoy.filter((i) => i.tipo !== 'RETARDO' && i.tipo !== 'SALIDA').length;
+    cab('Prefectura y subdirección', 'Personal', '<div class="stats">' +
+      '<div class="stat"><b>' + activos.length + '</b><span>Personas</span></div>' +
+      '<div class="stat"><b class="mal">' + hoyF + '</b><span>Ausentes hoy</span></div>' +
+      '<div class="stat"><b class="amb">' + P.hoy.filter((i) => i.tipo === 'RETARDO').length + '</b><span>Retardos hoy</span></div></div>');
+    let h = '<button class="oro ancho grande" onclick="formIncidencia()">' + svg('mas', 22) + 'Registrar incidencia</button>';
+    h += '<div class="seccion"><h3>Hoy</h3></div>';
+    h += P.hoy.length ? '<div class="card" style="padding:2px 14px">' + P.hoy.map((i) =>
+      '<div class="mov" onclick="vPersona(\'' + esc(i.idPersona) + '\')"><span class="circ ' + TIPO_CIRC[i.tipo] + '">' + svg(i.tipo === 'RETARDO' ? 'reloj' : 'personal', 18) + '</span>' +
+      '<div class="t"><b>' + esc(i.nombre) + '</b><span>' + esc(i.tipoTexto) + ' · ' + esc(txtInc(i)) + '</span></div></div>').join('') + '</div>'
+      : '<div class="tenue">Sin faltas, retardos ni licencias registradas hoy.</div>';
+    const r = S.perRep;
+    h += '<div class="seccion"><h3>Reporte</h3></div><div class="card">' +
+      '<div class="fila"><div class="crece"><label>Desde</label><input id="qIni" type="date" value="' + r.ini + '" onchange="S.perRep.ini=this.value"></div>' +
+      '<div class="crece"><label>Hasta</label><input id="qFin" type="date" value="' + r.fin + '" onchange="S.perRep.fin=this.value"></div></div>' +
+      '<div class="acciones"><button class="chico" onclick="perPeriodo(0)">Quincena actual</button><button class="chico" onclick="perPeriodo(-1)">Quincena anterior</button>' +
+      '<button class="chico" onclick="perPeriodo(\'mes\')">Este mes</button></div>' +
+      '<div class="acciones"><button class="prim" onclick="verRepPersonal()">Ver reporte</button><button onclick="imprimirRepPersonal()">Imprimir</button>' +
+      '<button onclick="exportarPersonal()">Descargar en Excel</button></div></div><div id="qRes"></div>';
+    h += '<div class="seccion"><h3>Personal (' + activos.length + ')</h3><button class="chico" onclick="formPersona()">' + svg('mas', 16) + ' Agregar</button></div>';
+    h += '<input id="qQ" placeholder="Buscar por nombre o asignatura" oninput="filtrarPersonal(this.value)" style="margin-bottom:8px"><div id="qLista"></div>';
+    $('#main').innerHTML = h;
+    filtrarPersonal('');
+  } catch (e) { errVista(e); }
+}
+function filtrarPersonal(q) {
+  const n = (x) => String(x || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const t = n(q).trim();
+  const l = S.per.personas.filter((p) => !t || n(p.nombre + ' ' + p.asignatura + ' ' + p.puesto).indexOf(t) >= 0);
+  $('#qLista').innerHTML = l.length ? '<div class="card" style="padding:4px 10px">' + l.map((p) =>
+    '<div class="res fila" onclick="vPersona(\'' + esc(p.id) + '\')"><span class="ini">' + esc(iniciales(p.nombre).toUpperCase()) + '</span><span class="crece"><b>' + esc(p.nombre) + '</b><br>' +
+    '<span class="tenue">' + esc([p.puesto, p.asignatura].filter(Boolean).join(' · ')) + '</span></span>' + (p.activo ? '' : badge('BAJA', 'Inactivo')) + '</div>').join('') + '</div>'
+    : '<div class="tenue">' + (S.per.personas.length ? 'Sin resultados.' : 'Todavía no hay personal. Toca "Agregar" para dar de alta a los maestros.') + '</div>';
+}
+function perPeriodo(d) {
+  if (d === 'mes') { const m = S.ini.hoy.slice(0, 7); const p = m.split('-').map(Number); S.perRep = { ini: m + '-01', fin: m + '-' + String(new Date(p[0], p[1], 0).getDate()).padStart(2, '0') }; }
+  else { const q = quincena(S.ini.hoy, d); S.perRep = { ini: q[0], fin: q[1] }; }
+  $('#qIni').value = S.perRep.ini; $('#qFin').value = S.perRep.fin;
+  verRepPersonal();
+}
+const COLS_PER = ['FALTA', 'RETARDO', 'SALIDA', 'LICENCIA_MEDICA', 'PERMISO', 'COMISION', 'OTRO'];
+function tablaPersonal(r, soloCon) {
+  const filas = soloCon ? r.filas.filter((f) => f.conIncidencias) : r.filas;
+  if (!filas.length) return '<div class="tenue">No hay incidencias en este periodo.</div>';
+  return '<table class="tabla"><tr><th>#</th><th class="izq">Nombre</th>' + COLS_PER.map((k) => '<th>' + TIPO_CORTO[k] + '</th>').join('') + '</tr>' +
+    filas.map((f, i) => '<tr><td>' + (i + 1) + '</td><td class="izq">' + esc(f.nombre) + (f.asignatura ? '<br><span style="font-size:11px;color:#777">' + esc(f.asignatura) + '</span>' : '') + '</td>' +
+      COLS_PER.map((k) => '<td class="' + (f.totales[k] && (k === 'FALTA') ? 'c-F' : f.totales[k] && k === 'RETARDO' ? 'c-R' : '') + '">' + (f.totales[k] || '') + '</td>').join('') + '</tr>').join('') + '</table>';
+}
+function detallePersonal(r) {
+  if (!r.detalle.length) return '';
+  return '<table class="tabla"><tr><th class="izq">Fecha</th><th class="izq">Nombre</th><th class="izq">Tipo</th><th>Días</th><th class="izq">Detalle</th></tr>' +
+    r.detalle.map((d) => '<tr><td class="izq">' + fC(d.inicio) + (d.fin !== d.inicio ? ' al ' + fC(d.fin) : '') + '</td><td class="izq">' + esc(d.nombre) + '</td><td class="izq">' + esc(d.tipoTexto) + '</td>' +
+      '<td>' + (d.tipo === 'RETARDO' || d.tipo === 'SALIDA' ? '' : d.dias) + '</td><td class="izq">' +
+      esc([d.hora, d.horasClase ? d.horasClase + ' h de clase' : '', d.grupos, d.cubrio ? 'cubrió ' + d.cubrio : '', d.documento, d.comentario].filter(Boolean).join(' · ')) + '</td></tr>').join('') + '</table>';
+}
+async function verRepPersonal() {
+  $('#qRes').innerHTML = '<div class="cargando">Cargando…</div>';
+  try {
+    const r = await api('apiReportePersonal', S.perRep.ini, S.perRep.fin);
+    $('#qRes').innerHTML = '<h3>' + fF(r.inicio) + ' al ' + fF(r.fin) + ' (' + r.habiles + ' días hábiles)</h3>' +
+      '<div class="scroll">' + tablaPersonal(r, true) + '</div>' +
+      (r.detalle.length ? '<h3>Detalle</h3><div class="scroll">' + detallePersonal(r) + '</div>' : '') +
+      '<div class="tenue" style="margin-top:6px">Faltas, licencias, permisos y comisiones cuentan días hábiles. Retardos y salidas cuentan veces.</div>';
+  } catch (e) { $('#qRes').innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
+}
+async function imprimirRepPersonal() {
+  try {
+    const r = await api('apiReportePersonal', S.perRep.ini, S.perRep.fin);
+    imprimir('<style>@page{size:landscape;margin:10mm}</style><div class="pagina">' + encabezadoDoc() +
+      '<h3 style="text-align:center;margin:8px 0">Reporte de incidencias del personal · ' + fF(r.inicio) + ' al ' + fF(r.fin) + ' (' + r.habiles + ' días hábiles)</h3>' +
+      tablaPersonal(r, false) + (r.detalle.length ? '<h4>Detalle</h4>' + detallePersonal(r) : '') +
+      '<p style="font-size:10px">Faltas, licencias, permisos y comisiones en días hábiles; retardos y salidas en número de veces.</p>' +
+      '<div class="firmas"><div>Prefectura</div><div>Subdirección</div></div></div>');
+  } catch (e) { error(e); }
+}
+async function exportarPersonal() {
+  toast('Generando la hoja…');
+  try {
+    const r = await api('apiExportarPersonal', S.perRep.ini, S.perRep.fin);
+    const blob = new Blob(['﻿' + r.csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = r.nombre;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    toast('Archivo descargado: ' + r.nombre + '. Ábrelo con Excel.');
+  } catch (e) { error(e); }
+}
+function formIncidencia(idPre) {
+  const P = S.per, act = P.personas.filter((p) => p.activo);
+  if (!act.length) { toast('Primero agrega al personal.', 'err'); formPersona(); return; }
+  modal('<h2>Registrar incidencia</h2>' +
+    '<label>Persona</label><select id="iPer"><option value="">Selecciona…</option>' + act.map((p) =>
+      '<option value="' + esc(p.id) + '"' + (p.id === idPre ? ' selected' : '') + '>' + esc(p.nombre) + (p.asignatura ? ' · ' + esc(p.asignatura) : '') + '</option>').join('') + '</select>' +
+    '<span class="etiq">Tipo</span><input type="hidden" id="iTipo" value=""><div class="pastillas">' + Object.keys(P.tipos).map((k) =>
+      '<button type="button" class="pastilla" data-k="' + k + '" onclick="elegirTipoInc(\'' + k + '\')">' + esc(P.tipos[k].t) + '</button>').join('') + '</div>' +
+    '<div id="iCampos" class="hidden">' +
+    '<div class="fila"><div class="crece"><label id="iIniL">Fecha</label><input id="iIni" type="date" value="' + S.ini.hoy + '"></div>' +
+    '<div class="crece" id="iFinC"><label>Hasta</label><input id="iFin" type="date" value="' + S.ini.hoy + '"></div>' +
+    '<div class="crece hidden" id="iHoraC"><label>Hora</label><input id="iHora" type="time" value="' + horaAhora() + '"></div></div>' +
+    '<span class="etiq">Grupos afectados (opcional)</span><div class="chips" style="flex-wrap:wrap">' + S.ini.grupos.map((g) =>
+      '<button type="button" class="chip-g sel" onclick="this.classList.toggle(\'on\')" data-g="' + esc(g) + '">' + esc(g) + '</button>').join('') + '</div>' +
+    '<div class="fila"><div class="crece"><label>Horas de clase sin atender</label><input id="iHC" type="number" min="0" max="12" inputmode="numeric" placeholder="Ej. 3"></div>' +
+    '<div class="crece"><label>¿Quién cubrió?</label><input id="iCub" placeholder="Ej. prefecta"></div></div>' +
+    '<label>Documento o folio (opcional)</label><input id="iDoc" placeholder="Ej. folio de licencia, oficio de comisión">' +
+    '<label>Comentario</label><textarea id="iCom" rows="2"></textarea>' +
+    '<div class="tenue" id="iNota"></div></div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="iBtn" onclick="guardarIncidencia()">Guardar</button></div>');
+}
+function elegirTipoInc(k) {
+  const t = S.per.tipos[k];
+  document.querySelectorAll('.pastilla').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
+  $('#iTipo').value = k;
+  $('#iCampos').classList.remove('hidden');
+  $('#iFinC').classList.toggle('hidden', !t.rango);
+  $('#iHoraC').classList.toggle('hidden', !t.hora);
+  $('#iIniL').textContent = t.rango ? 'Desde' : 'Fecha';
+  $('#iNota').textContent = k === 'LICENCIA_MEDICA' ? 'Anota solo el folio y las fechas. No escribas el diagnóstico ni datos médicos.'
+    : t.rango ? 'Se cuentan solo los días hábiles del periodo (sin fines de semana ni días sin clase).' : '';
+}
+async function guardarIncidencia() {
+  const tipo = $('#iTipo').value, t = S.per.tipos[tipo];
+  const d = { idPersona: $('#iPer').value, tipo: tipo, inicio: $('#iIni').value };
+  if (!d.idPersona) return toast('Selecciona a la persona.', 'err');
+  if (!t) return toast('Selecciona el tipo de incidencia.', 'err');
+  if (t.rango) d.fin = $('#iFin').value || d.inicio;
+  if (t.hora) d.hora = $('#iHora').value;
+  d.grupos = Array.from(document.querySelectorAll('#iCampos .chip-g.on')).map((b) => b.dataset.g).join(', ');
+  d.horasClase = $('#iHC').value; d.cubrio = $('#iCub').value; d.documento = $('#iDoc').value; d.comentario = $('#iCom').value;
+  const b = $('#iBtn'); b.disabled = true;
+  const enCola = () => { encolar('apiRegistrarIncidencia', [d]); cerrar(); toast('Sin internet: quedó guardado en el celular y se enviará al volver la señal.'); };
+  if (!navigator.onLine) return enCola();
+  try {
+    const r = await api('apiRegistrarIncidencia', d);
+    cerrar(); toast(r.repetida ? 'Ese registro ya existía.' : 'Incidencia registrada' + (t.rango && r.dias > 1 ? ' (' + r.dias + ' días hábiles).' : '.'));
+    if (S.vista === 'personal') vPersonal();
+  } catch (e) { if (e.red) return enCola(); b.disabled = false; error(e); }
+}
+async function vPersona(id) {
+  modal('<div class="cargando">Cargando…</div>');
+  try {
+    const r = await api('apiHistorialPersona', id);
+    const p = r.persona;
+    S.perSel = p;
+    const res = COLS_PER.filter((k) => r.totales[k]).map((k) => '<div class="stat"><b' + (k === 'FALTA' ? ' class="mal"' : k === 'RETARDO' ? ' class="amb"' : '') + '>' +
+      r.totales[k] + '</b><span>' + esc(S.per.tipos[k].t) + (S.per.tipos[k].rango ? ' (días)' : '') + '</span></div>').join('');
+    $('#modalBody').innerHTML = '<div class="fila"><span class="ini">' + esc(iniciales(p.nombre).toUpperCase()) + '</span><span class="crece"><b>' + esc(p.nombre) + '</b><br>' +
+      '<span class="tenue">' + esc([p.puesto, p.asignatura].filter(Boolean).join(' · ')) + (p.activo ? '' : ' · inactivo') + '</span></span></div>' +
+      (res ? '<div class="stats claro" style="margin-top:12px">' + res + '</div>' : '') +
+      '<div class="acciones">' + (p.activo ? '<button class="prim" onclick="formIncidencia(\'' + esc(p.id) + '\')">Registrar incidencia</button>' : '') +
+      '<button onclick="formPersona(true)">Editar datos</button></div>' +
+      '<h3>Ciclo ' + esc(r.ciclo) + ' (' + r.incidencias.length + ')</h3>' +
+      (r.incidencias.length ? r.incidencias.map((i) => '<div class="card"><div class="fila"><span class="circ ' + TIPO_CIRC[i.tipo] + '" style="width:32px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center">' +
+        svg(i.tipo === 'RETARDO' ? 'reloj' : 'personal', 16) + '</span><span class="crece"><b>' + esc(i.tipoTexto) + '</b>' +
+        (i.tipo !== 'RETARDO' && i.tipo !== 'SALIDA' && i.dias > 1 ? ' <span class="tenue">' + i.dias + ' días</span>' : '') + '<br><span class="tenue">' + esc(txtInc(i)) + '</span>' +
+        (i.comentario ? '<br><span class="tenue">' + esc(i.comentario) + '</span>' : '') + '</span>' +
+        '<button class="chico" style="border:0" onclick="cancelarIncidencia(\'' + esc(i.id) + '\')">Cancelar</button></div></div>').join('')
+        : '<div class="tenue">Sin incidencias en este ciclo.</div>') +
+      '<div class="acciones"><button onclick="cerrar()">Cerrar</button></div>';
+  } catch (e) { cerrar(); error(e); }
+}
+async function cancelarIncidencia(id) {
+  const m = prompt('¿Por qué se cancela este registro? (queda en la bitácora)');
+  if (!m || !m.trim()) return;
+  try { await api('apiCancelarIncidencia', id, m); toast('Registro cancelado.'); vPersona(S.perSel.id); if (S.vista === 'personal') vPersonal(); }
+  catch (e) { error(e); }
+}
+function formPersona(editar) {
+  const p = editar ? S.perSel : { nombre: '', puesto: 'Docente', asignatura: '', activo: true, notas: '' };
+  modal('<h2>' + (editar ? 'Editar datos' : 'Agregar persona') + '</h2>' +
+    '<label>Nombre completo (apellidos y nombre)</label><input id="eNom" value="' + esc(p.nombre) + '" placeholder="Ej. García López María">' +
+    '<label>Puesto</label><select id="ePue">' + (S.per.puestos || ['Docente']).map((x) => '<option' + (x === p.puesto ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select>' +
+    '<label>Asignatura o función</label><input id="eAsi" value="' + esc(p.asignatura) + '" placeholder="Ej. Matemáticas">' +
+    '<label>Notas</label><input id="eNot" value="' + esc(p.notas) + '">' +
+    (editar ? '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="eAct" style="width:auto"' + (p.activo ? ' checked' : '') + '> Activo (desmarca si ya no labora aquí)</label>' : '') +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="eBtn" onclick="guardarPersona(' + (editar ? 'true' : 'false') + ')">Guardar</button></div>');
+}
+async function guardarPersona(editar) {
+  const b = $('#eBtn'); b.disabled = true;
+  try {
+    await api('apiGuardarPersona', { id: editar ? S.perSel.id : '', nombre: $('#eNom').value, puesto: $('#ePue').value, asignatura: $('#eAsi').value,
+      notas: $('#eNot').value, activo: editar ? $('#eAct').checked : true });
+    cerrar(); toast('Datos guardados.'); vPersonal();
+  } catch (e) { b.disabled = false; error(e); }
 }
 
 /* ---------------- Calendario escolar ---------------- */
