@@ -787,7 +787,7 @@ function txtInc(i) {
   return [fechas, i.hora ? i.hora : '', i.horasClase ? i.horasClase + ' h de clase' : '', i.grupos, i.cubrio ? 'cubrió ' + i.cubrio : '', i.documento]
     .filter(Boolean).join(' · ');
 }
-const PER_TABS = [['hoy', 'Hoy'], ['horario', 'Horario'], ['reporte', 'Reporte'], ['maestros', 'Maestros']];
+const PER_TABS = [['hoy', 'Hoy'], ['ausencias', 'Ausencias'], ['horario', 'Horario'], ['reporte', 'Reporte'], ['maestros', 'Personal']];
 function fG(g) { return String(g).slice(0, 1) + '°' + String(g).slice(1); }
 function h12(h) { const p = String(h).split(':'); const n = parseInt(p[0], 10); return (n > 12 ? n - 12 : n) + ':' + p[1]; }
 function corto(n) { const p = String(n || '').split(/\s+/); return p.length > 3 ? p.slice(0, 2).join(' ') + ' ' + p.slice(2).join(' ') : n; }
@@ -809,7 +809,7 @@ async function vPersonal(tab) {
     let h = '<div class="pestanas">' + PER_TABS.map((t) => '<button class="' + (t[0] === S.perTab ? 'on' : '') + '" onclick="vPersonal(\'' + t[0] + '\')">' + t[1] + '</button>').join('') + '</div>';
     h += '<div id="perCuerpo"></div>';
     $('#main').innerHTML = h;
-    ({ hoy: perHoy, horario: perHorario, reporte: perReporte, maestros: perMaestros }[S.perTab])();
+    ({ hoy: perHoy, ausencias: perAusencias, horario: perHorario, reporte: perReporte, maestros: perMaestros }[S.perTab])();
   } catch (e) { errVista(e); }
 }
 function perHoy() {
@@ -835,7 +835,7 @@ function tarjetasSuplencias(l) {
     '<button class="chico" onclick="terminarSuplencia(\'' + esc(x.id) + '\')">Terminar</button></div></div>').join('')
     : '<div class="tenue">Nadie está supliendo a otra persona.</div>';
 }
-const ESTADO_CLASE = { OK: '', SUPLENTE: 'k-sup', RETARDO: 'k-ret', SALIDA: 'k-sal', SIN_MAESTRO: 'k-sin', SIN_ASIGNAR: 'k-libre' };
+const ESTADO_CLASE = { OK: '', SUPLENTE: 'k-sup', RETARDO: 'k-ret', SALIDA: 'k-sal', SIN_MAESTRO: 'k-sin', CUBIERTA: 'k-cub', SIN_ASIGNAR: 'k-libre' };
 function rejillaClases(d, editable) {
   const mapa = {};
   d.clases.forEach((c) => { mapa[c.ini + '|' + c.grupo] = c; });
@@ -846,11 +846,13 @@ function rejillaClases(d, editable) {
       ant = m.fin;
       return receso + '<tr><td class="fija"><b>' + h12(m.ini) + '</b><br>' + h12(m.fin) + '</td>' + d.grupos.map((g) => {
         const c = mapa[m.ini + '|' + g];
-        const clic = editable ? ' onclick="editarClase(' + editable + ',\'' + m.ini + '\',\'' + esc(g) + '\')"' : (c && c.idMaestro ? ' onclick="vPersona(\'' + esc(c.idMaestro) + '\')"' : '');
+        const clic = editable ? ' onclick="editarClase(' + editable + ',\'' + m.ini + '\',\'' + esc(g) + '\')"'
+          : c && (c.estado === 'SIN_MAESTRO' || c.estado === 'CUBIERTA') ? ' onclick="formCobertura(\'' + m.ini + '\',\'' + esc(g) + '\')"'
+          : (c && c.idMaestro ? ' onclick="vPersona(\'' + esc(c.idMaestro) + '\')"' : '');
         if (!c) return '<td class="k-libre"' + clic + '>—</td>';
         return '<td class="' + (ESTADO_CLASE[c.estado] || '') + '"' + clic + '><b>' + esc(c.asignatura) + '</b><br>' + esc(corto(c.maestro || c.nombre || '')) +
           (c.estado === 'SUPLENTE' ? '<br><i>suple a ' + esc(corto(c.titular)) + '</i>' : '') +
-          (c.estado === 'SIN_MAESTRO' ? '<br><i>Sin maestro</i>' : '') + (c.estado === 'RETARDO' || c.estado === 'SALIDA' ? '<br><i>' + esc((c.incidencias || []).join(', ')) + '</i>' : '') + '</td>';
+          (c.estado === 'SIN_MAESTRO' ? '<br><i>Sin maestro · toca para asignar</i>' : '') + (c.estado === 'CUBIERTA' ? '<br><i>cubre ' + esc(corto(c.cubre)) + '</i>' : '') + (c.estado === 'RETARDO' || c.estado === 'SALIDA' ? '<br><i>' + esc((c.incidencias || []).join(', ')) + '</i>' : '') + '</td>';
       }).join('') + '</tr>';
     }).join('') + '</table></div>';
 }
@@ -866,7 +868,7 @@ async function pintarClasesDia() {
     if (!d.clases.length) { el.innerHTML = '<div class="aviso">' + (d.dia === 0 || d.dia === 6 ? 'Es fin de semana.' : 'Todavía no hay horario cargado. Ve a la pestaña Horario.') + '</div>'; return; }
     const n = (e) => d.clases.filter((c) => c.estado === e).length;
     el.innerHTML = (d.habil ? '' : '<div class="aviso">Este día está marcado sin clase en el calendario.</div>') +
-      '<div class="leyenda"><span class="k-sin">Sin maestro ' + n('SIN_MAESTRO') + '</span><span class="k-sup">Con suplente ' + n('SUPLENTE') + '</span>' +
+      '<div class="leyenda"><span class="k-sin">Sin maestro ' + n('SIN_MAESTRO') + '</span><span class="k-cub">Cubiertas ' + n('CUBIERTA') + '</span><span class="k-sup">Con suplente ' + n('SUPLENTE') + '</span>' +
       '<span class="k-ret">Retardo ' + n('RETARDO') + '</span><span>Sin incidencia ' + n('OK') + '</span></div>' + rejillaClases(d, false);
   } catch (e) { el.innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
 }
@@ -879,13 +881,13 @@ function paginaFirmas(d, fecha) {
   const filas = d.modulos.map((m) => {
     const receso = ant && ant !== m.ini ? '<tr><td colspan="' + (d.grupos.length + 2) + '" class="f-receso">R &nbsp; E &nbsp; C &nbsp; E &nbsp; S &nbsp; O</td></tr>' : '';
     ant = m.fin;
-    const obs = d.grupos.map((g) => mapa[m.ini + '|' + g]).filter((c) => c && fecha && (c.estado === 'SIN_MAESTRO' || c.estado === 'RETARDO' || c.estado === 'SALIDA'))
-      .map((c) => fG(c.grupo) + ': ' + (c.estado === 'SIN_MAESTRO' ? 'sin maestro' : (c.incidencias || []).join(', ').toLowerCase())).join('<br>');
+    const obs = d.grupos.map((g) => mapa[m.ini + '|' + g]).filter((c) => c && fecha && ['SIN_MAESTRO', 'CUBIERTA', 'RETARDO', 'SALIDA'].indexOf(c.estado) >= 0)
+      .map((c) => fG(c.grupo) + ': ' + (c.estado === 'SIN_MAESTRO' ? 'sin maestro' : c.estado === 'CUBIERTA' ? 'falta ' + corto(c.maestro) + ', cubre ' + corto(c.cubre) : (c.incidencias || []).join(', ').toLowerCase())).join('<br>');
     return receso + '<tr class="f-asig"><td rowspan="2" class="f-hora">' + h12(m.ini) + '-' + h12(m.fin) + '</td>' + d.grupos.map((g) => '<td>' + esc((mapa[m.ini + '|' + g] || {}).asignatura || '') + '</td>').join('') +
       '<td rowspan="2" class="f-obs">' + obs + '</td></tr><tr class="f-nom">' + d.grupos.map((g) => {
         const c = mapa[m.ini + '|' + g] || {};
-        const nom = c.maestro || c.nombre || '';
-        return '<td>' + esc(nom) + (c.suplente ? '<br><small>(suple a ' + esc(c.titular) + ')</small>' : '') + '</td>';
+        const nom = c.estado === 'CUBIERTA' ? c.cubre : (c.maestro || c.nombre || '');
+        return '<td>' + esc(nom) + (c.estado === 'CUBIERTA' ? '<br><small>(cubre a ' + esc(c.maestro) + ')</small>' : c.suplente ? '<br><small>(suple a ' + esc(c.titular) + ')</small>' : '') + '</td>';
       }).join('') + '</tr>';
   }).join('');
   const dias = ['', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES'];
@@ -916,6 +918,57 @@ async function imprimirFirmasSemana() {
       clases: H.clases.filter((c) => c.dia === dia).map((c) => Object.assign({}, c, { maestro: nombres[c.idPersona] || '' })) }, ''));
     imprimir(ESTILO_FIRMAS + paginas.join(''));
   } catch (e) { error(e); }
+}
+function formCobertura(ini, g) {
+  const d = S.clasesDia, c = d.clases.find((x) => x.ini === ini && x.grupo === g);
+  if (!c) return;
+  const libres = (d.libres || {})[ini] || [];
+  const ids = {}; libres.forEach((p) => { ids[p.id] = true; });
+  const otros = S.per.personas.filter((p) => p.activo && !ids[p.id] && p.id !== c.idMaestro);
+  modal('<h2>' + fG(g) + ' · ' + h12(ini) + '-' + h12(c.fin) + '</h2><div class="tenue">' + esc(c.asignatura) + ' · ' + fF(d.fecha) + '</div>' +
+    '<div class="aviso err" style="margin-top:10px">Falta ' + esc(c.maestro) + '</div>' +
+    '<label>¿Quién cubre este grupo?</label><select id="cCub"><option value="">Selecciona…</option>' +
+    (libres.length ? '<optgroup label="Libres a esta hora (sugeridos)">' + libres.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === c.idCubre ? ' selected' : '') + '>' + esc(p.nombre) + '</option>').join('') + '</optgroup>' : '') +
+    '<optgroup label="Otro personal">' + otros.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === c.idCubre ? ' selected' : '') + '>' + esc(p.nombre) + (p.puesto && p.puesto !== 'Docente' ? ' · ' + esc(p.puesto) : '') + '</option>').join('') + '</optgroup></select>' +
+    '<div class="tenue" style="margin-top:6px">' + (libres.length ? libres.length + ' docente(s) no tienen clase a esta hora.' : 'Ningún docente está libre a esta hora; puedes elegir a otra persona del personal.') + '</div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button>' + (c.idCubre ? '<button class="peligro" onclick="guardarCobertura(\'' + ini + '\',\'' + esc(g) + '\',true)">Quitar</button>' : '') +
+    '<button class="prim" onclick="guardarCobertura(\'' + ini + '\',\'' + esc(g) + '\')">Guardar</button></div>');
+}
+async function guardarCobertura(ini, g, quitar) {
+  const id = quitar ? '' : $('#cCub').value;
+  if (!quitar && !id) return toast('Selecciona quién cubre.', 'err');
+  try {
+    await api('apiAsignarCobertura', { fecha: S.clasesDia.fecha, ini: ini, grupo: g, idCubre: id });
+    cerrar(); toast(quitar ? 'Cobertura quitada.' : 'Cobertura asignada.'); pintarClasesDia();
+  } catch (e) { error(e); }
+}
+async function perAusencias() {
+  S.ausDias = S.ausDias || 10;
+  $('#perCuerpo').innerHTML = '<div class="cargando">Cargando…</div>';
+  try {
+    const r = await api('apiAusencias', S.ini.hoy, S.ausDias);
+    const dc = r.ausencias.filter((a) => a.docente), ap = r.ausencias.filter((a) => !a.docente);
+    const tira = '<div class="dias-aus">' + r.dias.map((d) =>
+      '<button class="' + (d.sinMaestro ? 'rojo' : d.ausentes ? 'amb' : '') + '" onclick="S.perFecha=\'' + d.fecha + '\';vPersonal(\'hoy\')">' +
+      '<span>' + dia(d.fecha) + '</span><b>' + fC(d.fecha) + '</b><small>' + (d.sinMaestro ? d.sinMaestro + ' sin maestro' : d.ausentes ? d.ausentes + ' ausente' + (d.ausentes > 1 ? 's' : '') : 'Completo') + '</small>' +
+      (d.grupos.length ? '<small>' + (d.grupos.length > 4 ? d.grupos.length + ' grupos' : d.grupos.map(fG).join(' ')) + '</small>' : '') + '</button>').join('') + '</div>';
+    const tarjeta = (a) => '<div class="card"><div class="fila"><span class="crece"><b>' + esc(a.nombre) + '</b><br><span class="tenue">' + esc(a.puesto) + '</span></span>' +
+      (a.enCurso ? badge('F', 'Ausente') : badge('R', 'Próxima')) + '</div>' +
+      '<div style="margin-top:8px;font-size:14px">' + (a.inicio === a.fin ? 'El ' + fF(a.inicio) : 'Del ' + fF(a.inicio) + ' al ' + fF(a.fin)) +
+      ' · <b>' + a.dias + ' día' + (a.dias === 1 ? '' : 's') + ' hábil' + (a.dias === 1 ? '' : 'es') + '</b></div>' +
+      '<div class="tenue">Regresa el ' + dia(a.regresa) + ' ' + fF(a.regresa) + '</div>' +
+      (a.docente ? (a.suplente ? '<div style="color:var(--azul);font-weight:600;margin-top:4px">Suplente: ' + esc(a.suplente) + '</div>'
+        : a.sinCubrir ? '<div class="mal" style="font-weight:600;margin-top:4px">Sin suplente · ' + a.sinCubrir + ' clase' + (a.sinCubrir === 1 ? '' : 's') + ' sin cubrir' + (a.cubiertas ? ' (' + a.cubiertas + ' ya cubiertas)' : '') + '</div>'
+        : '<div style="color:var(--verde);font-weight:600;margin-top:4px">' + (a.cubiertas ? 'Sus ' + a.cubiertas + ' clases ya están cubiertas' : 'No tiene clases esos días') + '</div>') : '') +
+      '<div class="acciones"><button class="chico" onclick="vPersona(\'' + esc(a.idPersona) + '\')">Ver</button>' +
+      (a.docente && !a.suplente ? '<button class="chico" onclick="formSuplencia(\'' + esc(a.idPersona) + '\')">Asignar suplente</button>' : '') + '</div></div>';
+    $('#perCuerpo').innerHTML = '<button class="oro ancho grande" onclick="formIncidencia()">' + svg('mas', 22) + 'Registrar ausencia</button>' +
+      '<div class="seccion"><h3>Próximos ' + r.dias.length + ' días de clase</h3><select style="width:auto" onchange="S.ausDias=+this.value;perAusencias()">' +
+      [10, 20, 30].map((n) => '<option value="' + n + '"' + (n === S.ausDias ? ' selected' : '') + '>' + n + ' días</option>').join('') + '</select></div>' +
+      '<div class="tenue" style="margin-bottom:8px">En rojo, los días con grupos sin maestro. Toca un día para ver sus clases y asignar quién cubre.</div>' + tira +
+      '<div class="seccion"><h3>Docentes (' + dc.length + ')</h3></div>' + (dc.map(tarjeta).join('') || '<div class="tenue">Ningún docente tiene ausencias registradas en estos días.</div>') +
+      '<div class="seccion"><h3>Personal de apoyo y directivos (' + ap.length + ')</h3></div>' + (ap.map(tarjeta).join('') || '<div class="tenue">Sin ausencias registradas en estos días.</div>');
+  } catch (e) { $('#perCuerpo').innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
 }
 async function perHorario() {
   S.horDia = S.horDia || Math.min(Math.max(new Date().getDay(), 1), 5);

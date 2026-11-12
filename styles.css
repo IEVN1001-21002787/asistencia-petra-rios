@@ -220,3 +220,16 @@ table.horario tr.receso td { background: var(--fondo); color: var(--tenue); font
 .leyenda { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
 .leyenda span { padding: 4px 8px; border-radius: 8px; background: #fff; }
 button.peligro { color: var(--rojo); border-color: var(--rojo); }
+
+.k-cub { background: var(--verde-suave) !important; color: var(--verde); }
+.dias-aus { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.dias-aus::-webkit-scrollbar { display: none; }
+.dias-aus button { flex: 0 0 auto; min-width: 86px; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 10px; border-radius: 14px; background: #fff; border: 1.5px solid var(--borde); text-align: left; min-height: 0; }
+.dias-aus button span { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--tenue); }
+.dias-aus button b { font-family: var(--titulos); font-size: 17px; }
+.dias-aus button small { font-size: 11px; font-weight: 600; color: var(--verde); }
+.dias-aus button.rojo { background: var(--rojo-suave); border-color: var(--rojo); }
+.dias-aus button.rojo small, .dias-aus button.rojo b { color: var(--rojo); }
+.dias-aus button.amb { background: var(--ambar-suave); border-color: #E8C58F; }
+.dias-aus button.amb small { color: var(--ambar); }
+.pestanas button { font-size: 13px; }

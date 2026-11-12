@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.4';
+const VERSION = '2.5';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -29,6 +29,7 @@ const HOJAS = {
     'Cubrio', 'Documento', 'Comentario', 'Estatus', 'Registro', 'Fecha_Registro', 'Actualizado'],
   Horario: ['Dia', 'Hora_Inicio', 'Hora_Fin', 'Grupo', 'Asignatura', 'ID_Personal'],
   Suplencias: ['ID_Sup', 'ID_Titular', 'ID_Suplente', 'Fecha_Inicio', 'Fecha_Fin', 'Motivo', 'Comentario', 'Estatus', 'Registro', 'Fecha_Registro'],
+  Coberturas: ['Fecha', 'Hora_Inicio', 'Grupo', 'ID_Cubre', 'ID_Ausente', 'Registro', 'Fecha_Registro'],
 };
 
 const IMPORTAR_ENCABEZADOS = ['Apellido_Paterno', 'Apellido_Materno', 'Nombres', 'CURP', 'Grupo',
@@ -89,7 +90,7 @@ const TIPOS_INCIDENCIA = {
   COMISION: { t: 'Comisión', rango: true },
   OTRO: { t: 'Otro', rango: true },
 };
-const PUESTOS = ['Docente', 'Directivo', 'Administrativo', 'Prefectura', 'Trabajo social', 'Apoyo', 'Intendencia'];
+const PUESTOS = ['Docente', 'Dirección', 'Subdirección', 'Prefectura', 'Psicología', 'Trabajo social', 'Administrativo', 'Intendencia', 'Apoyo'];
 
 const TIPOS_SIN_CLASE = {
   FESTIVO: 'Día festivo', SUSPENSION: 'Suspensión de labores', CTE: 'Consejo Técnico Escolar',
@@ -119,6 +120,7 @@ const ACCIONES = {
   apiUsuarios: apiUsuarios, apiGuardarUsuario: apiGuardarUsuario,
   apiHorario: apiHorario, apiGuardarClase: apiGuardarClase, apiClasesDia: apiClasesDia,
   apiRegistrarSuplencia: apiRegistrarSuplencia, apiTerminarSuplencia: apiTerminarSuplencia, apiBajaPersona: apiBajaPersona,
+  apiAsignarCobertura: apiAsignarCobertura, apiAusencias: apiAusencias,
 };
 
 let _correoActual = null;
@@ -1477,37 +1479,171 @@ function apiGuardarClase(d) {
   }
 }
 
-/** Las clases de un día con quién las da (titular o suplente) y si hay alguna incidencia. */
-function apiClasesDia(fecha) {
-  requiere_('personal');
-  fecha = validarFecha_(fecha || hoy_());
+const NO_AUSENCIA = { RETARDO: true, SALIDA: true };
+
+/** Datos que se leen una sola vez para calcular varios días. */
+function datosClases_() {
+  return { mp: mapaPersonal_(), incs: incidenciasVigentes_(), sups: tabla_('Suplencias').filter(function (r) { return r.Estatus !== 'CANCELADA'; }),
+    horario: tabla_('Horario'), cobs: tabla_('Coberturas') };
+}
+
+/** Las clases de una fecha con quién las da (titular, suplente o quien cubre) y su estado. */
+function clasesDeFecha_(fecha, D) {
   const dia = parseF_(fecha).getDay();
-  const mp = mapaPersonal_();
+  const mp = D.mp;
   const sup = {};
-  suplenciasVigentes_(fecha, mp).forEach(function (s) { sup[s.idTitular] = s; });
+  D.sups.forEach(function (r) { if (r.Fecha_Inicio <= fecha && (!r.Fecha_Fin || r.Fecha_Fin >= fecha)) sup[r.ID_Titular] = r; });
   const inc = {};
-  incidenciasVigentes_().forEach(function (r) {
+  D.incs.forEach(function (r) {
     if (r.Fecha_Inicio <= fecha && (r.Fecha_Fin || r.Fecha_Inicio) >= fecha) (inc[r.ID_Personal] = inc[r.ID_Personal] || []).push(incidencia_(r, mp));
   });
-  const ausente = function (lista) { return (lista || []).some(function (i) { return i.tipo !== 'RETARDO' && i.tipo !== 'SALIDA'; }); };
-  const clases = tabla_('Horario').filter(function (r) { return parseInt(r.Dia, 10) === dia; }).map(function (r) {
-    const titular = mp[r.ID_Personal];
+  const ausente = function (id) { return (inc[id] || []).some(function (i) { return !NO_AUSENCIA[i.tipo]; }); };
+  const cob = {};
+  D.cobs.forEach(function (r) { if (r.Fecha === fecha && r.ID_Cubre) cob[r.Hora_Inicio + '|' + r.Grupo] = r; });
+  const nom = function (id) { return mp[id] ? mp[id].Nombre : ''; };
+  return D.horario.filter(function (r) { return parseInt(r.Dia, 10) === dia; }).map(function (r) {
     const s = sup[r.ID_Personal];
-    const quien = s ? s.idSuplente : r.ID_Personal;
+    const quien = s ? s.ID_Suplente : r.ID_Personal;
     const incs = inc[quien] || [];
-    let estado = 'OK';
-    if (ausente(incs)) estado = 'SIN_MAESTRO';
+    let estado = 'OK', cubre = null;
+    if (!r.ID_Personal) estado = 'SIN_ASIGNAR';
+    else if (ausente(quien)) {
+      cubre = cob[r.Hora_Inicio + '|' + r.Grupo];
+      estado = cubre && !ausente(cubre.ID_Cubre) ? 'CUBIERTA' : 'SIN_MAESTRO';
+      if (estado === 'SIN_MAESTRO') cubre = null;
+    }
     else if (incs.some(function (i) { return i.tipo === 'RETARDO'; })) estado = 'RETARDO';
     else if (incs.some(function (i) { return i.tipo === 'SALIDA'; })) estado = 'SALIDA';
     else if (s) estado = 'SUPLENTE';
-    if (!r.ID_Personal) estado = 'SIN_ASIGNAR';
     return { ini: r.Hora_Inicio, fin: r.Hora_Fin, grupo: r.Grupo, asignatura: r.Asignatura,
-      idTitular: r.ID_Personal, titular: titular ? titular.Nombre : '', idMaestro: quien, maestro: mp[quien] ? mp[quien].Nombre : '',
-      suplente: !!s, estado: estado, incidencias: incs.map(function (i) { return i.tipoTexto + (i.hora ? ' ' + i.hora : ''); }) };
+      idTitular: r.ID_Personal, titular: nom(r.ID_Personal), idMaestro: quien, maestro: nom(quien), suplente: !!s,
+      idCubre: cubre ? cubre.ID_Cubre : '', cubre: cubre ? nom(cubre.ID_Cubre) : '',
+      estado: estado, incidencias: incs.map(function (i) { return i.tipoTexto + (i.hora ? ' ' + i.hora : ''); }) };
   });
+}
+
+/** Quién está libre en cada módulo de esa fecha: docentes activos sin clase, presentes y que no cubren otro grupo. */
+function libresDeFecha_(fecha, clases, D) {
+  const ausentes = {};
+  D.incs.forEach(function (r) {
+    if (!NO_AUSENCIA[r.Tipo] && r.Fecha_Inicio <= fecha && (r.Fecha_Fin || r.Fecha_Inicio) >= fecha) ausentes[r.ID_Personal] = true;
+  });
+  const ocupados = {};
+  clases.forEach(function (c) {
+    (ocupados[c.ini] = ocupados[c.ini] || {})[c.idMaestro] = true;
+    if (c.idCubre) ocupados[c.ini][c.idCubre] = true;
+  });
+  const docentes = Object.keys(D.mp).map(function (id) { return D.mp[id]; }).filter(function (p) {
+    return String(p.Activo).toUpperCase() !== 'NO' && p.Puesto === 'Docente' && !ausentes[p.ID_Personal];
+  }).sort(function (a, b) { return a.Nombre.localeCompare(b.Nombre, 'es'); });
+  const out = {};
+  modulos_().forEach(function (m) {
+    out[m.ini] = docentes.filter(function (p) { return !(ocupados[m.ini] || {})[p.ID_Personal]; })
+      .map(function (p) { return { id: p.ID_Personal, nombre: p.Nombre }; });
+  });
+  return out;
+}
+
+function apiClasesDia(fecha) {
+  requiere_('personal');
+  fecha = validarFecha_(fecha || hoy_());
+  const D = datosClases_();
+  const clases = clasesDeFecha_(fecha, D);
+  const dia = parseF_(fecha).getDay();
   const c = config_();
   return { fecha: fecha, dia: dia, diaNombre: DIAS_SEMANA[dia] || '', habil: esHabil_(fecha), modulos: modulos_(), grupos: grupos_(),
-    clases: clases, turno: c.TURNO, vobo: [c.VOBO_1 || '', c.VOBO_2 || ''], escuela: c.ESCUELA };
+    clases: clases, libres: libresDeFecha_(fecha, clases, D), turno: c.TURNO, vobo: [c.VOBO_1 || '', c.VOBO_2 || ''], escuela: c.ESCUELA };
+}
+
+/** d: {fecha, ini, grupo, idCubre}. Sin idCubre se quita la cobertura. */
+function apiAsignarCobertura(d) {
+  const u = requiere_('personal');
+  const fecha = validarFecha_(d.fecha || hoy_());
+  const D = datosClases_();
+  const clase = clasesDeFecha_(fecha, D).find(function (c) { return c.ini === d.ini && c.grupo === d.grupo; });
+  if (!clase) throw new Error('No hay clase en ese módulo y grupo.');
+  const idCubre = String(d.idCubre || '');
+  if (idCubre) {
+    const p = D.mp[idCubre];
+    if (!p || String(p.Activo).toUpperCase() === 'NO') throw new Error('Selecciona quién va a cubrir.');
+    if (clase.estado !== 'SIN_MAESTRO' && clase.estado !== 'CUBIERTA') throw new Error('Ese grupo sí tiene maestro.');
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const filas = tabla_('Coberturas').filter(function (r) { return r.Fecha === fecha && r.Hora_Inicio === d.ini && r.Grupo === d.grupo; })
+      .map(function (r) { return r._fila; }).sort(function (a, b) { return b - a; });
+    if (idCubre) {
+      const otra = tabla_('Coberturas').find(function (r) { return r.Fecha === fecha && r.Hora_Inicio === d.ini && r.ID_Cubre === idCubre && r.Grupo !== d.grupo; });
+      if (otra) throw new Error(D.mp[idCubre].Nombre + ' ya cubre el grupo ' + otra.Grupo + ' a esa hora.');
+      if (filas.length) { actualizar_('Coberturas', filas[filas.length - 1], { ID_Cubre: idCubre, ID_Ausente: clase.idMaestro, Registro: u.email, Fecha_Registro: sello_() }); filas.pop(); }
+      else agregar_('Coberturas', [{ Fecha: fecha, Hora_Inicio: d.ini, Grupo: d.grupo, ID_Cubre: idCubre, ID_Ausente: clase.idMaestro, Registro: u.email, Fecha_Registro: sello_() }]);
+    }
+    const s = sh_('Coberturas');
+    filas.forEach(function (f) { s.deleteRow(f); });
+    _cache = {};
+    log_(u, 'COBERTURA', fecha + ' ' + d.ini + ' ' + d.grupo + ': ' + (idCubre || 'sin cubrir'));
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Tablero de ausencias: quién faltará (no retardos) en los próximos "dias" días hábiles desde "desde",
+ * y cuántos grupos quedan sin maestro cada día.
+ */
+function apiAusencias(desde, dias) {
+  requiere_('personal');
+  desde = validarFecha_(desde || hoy_());
+  dias = Math.min(Math.max(parseInt(dias, 10) || 10, 1), 30);
+  const sin = diasSinClase_();
+  const habiles = [];
+  const x = parseF_(desde);
+  let vueltas = 0;
+  while (habiles.length < dias && vueltas < 120) { const f = fmtF_(x); if (esHabil_(f, sin)) habiles.push(f); x.setDate(x.getDate() + 1); vueltas++; }
+  const hasta = habiles.length ? habiles[habiles.length - 1] : desde;
+  const D = datosClases_();
+  const mp = D.mp;
+  const porPersona = {};
+  const resumen = habiles.map(function (f) {
+    const cl = clasesDeFecha_(f, D);
+    cl.forEach(function (c) {
+      if (c.estado !== 'SIN_MAESTRO' && c.estado !== 'CUBIERTA') return;
+      const q = porPersona[c.idMaestro] = porPersona[c.idMaestro] || { sin: 0, cub: 0 };
+      if (c.estado === 'SIN_MAESTRO') q.sin++; else q.cub++;
+    });
+    const sinM = cl.filter(function (c) { return c.estado === 'SIN_MAESTRO'; });
+    const grupos = {};
+    sinM.forEach(function (c) { grupos[c.grupo] = true; });
+    return { fecha: f, sinMaestro: sinM.length, cubiertas: cl.filter(function (c) { return c.estado === 'CUBIERTA'; }).length,
+      grupos: Object.keys(grupos).sort(), ausentes: 0 };
+  });
+  const porDia = {};
+  resumen.forEach(function (r) { porDia[r.fecha] = r; });
+  const siguienteHabil = function (f) {
+    const y = parseF_(f); let v = 0;
+    do { y.setDate(y.getDate() + 1); v++; } while (!esHabil_(fmtF_(y), sin) && v < 120);
+    return fmtF_(y);
+  };
+  const sups = {};
+  D.sups.forEach(function (r) { (sups[r.ID_Titular] = sups[r.ID_Titular] || []).push(r); });
+  const lista = D.incs.filter(function (r) {
+    return !NO_AUSENCIA[r.Tipo] && (r.Fecha_Fin || r.Fecha_Inicio) >= desde && r.Fecha_Inicio <= hasta;
+  }).map(function (r) {
+    const p = mp[r.ID_Personal] || {};
+    const fin = r.Fecha_Fin || r.Fecha_Inicio;
+    const total = diasIncidencia_(r, r.Fecha_Inicio, fin, sin);
+    habiles.forEach(function (f) { if (f >= r.Fecha_Inicio && f <= fin) porDia[f].ausentes++; });
+    const s = (sups[r.ID_Personal] || []).find(function (x) { return x.Fecha_Inicio <= fin && (!x.Fecha_Fin || x.Fecha_Fin >= r.Fecha_Inicio); });
+    const clasesSem = D.horario.filter(function (h) { return h.ID_Personal === r.ID_Personal; }).length;
+    return { id: r.ID_Inc, idPersona: r.ID_Personal, nombre: p.Nombre || r.ID_Personal, puesto: p.Puesto || '',
+      docente: p.Puesto === 'Docente' || clasesSem > 0, inicio: r.Fecha_Inicio, fin: fin, dias: total, regresa: siguienteHabil(fin),
+      enCurso: r.Fecha_Inicio <= hoy_(), suplente: s ? (mp[s.ID_Suplente] || {}).Nombre || '' : '', clasesSemana: clasesSem,
+      sinCubrir: (porPersona[r.ID_Personal] || {}).sin || 0, cubiertas: (porPersona[r.ID_Personal] || {}).cub || 0 };
+  }).sort(function (a, b) { return a.inicio.localeCompare(b.inicio) || a.nombre.localeCompare(b.nombre, 'es'); });
+  return { desde: desde, hasta: hasta, dias: resumen, ausencias: lista };
 }
 
 /** d: {idTitular, idSuplente, inicio, fin?, motivo, comentario} */
