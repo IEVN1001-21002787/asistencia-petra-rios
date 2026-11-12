@@ -1,5 +1,5 @@
 /* Guarda la app en el celular para que abra sin internet. Cambia VERSION al publicar cambios. */
-const VERSION = 'asistencia-v2.7.0';
+const VERSION = 'asistencia-v2.8.0';
 const ARCHIVOS = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './apple-touch-icon.png', './logo.png'];
 

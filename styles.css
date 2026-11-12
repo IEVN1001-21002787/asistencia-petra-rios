@@ -255,3 +255,14 @@ table.huecos td.h-libre { color: var(--verde); cursor: pointer; font-weight: 600
 table.huecos td.h-libre.on { background: var(--verde); color: #fff; font-size: 16px; }
 table.huecos td.h-no { color: #A0A6BC; background: #FAFBFD; }
 table.huecos td.h-mio { color: var(--azul); background: var(--azul-suave); font-weight: 600; }
+
+.cierre-fila { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--borde); flex-wrap: wrap; }
+.cierre-fila:last-child { border-bottom: 0; }
+.seg-cierre { display: flex; gap: 4px; }
+.seg-cierre button { min-height: 36px; padding: 0 10px; font-size: 13px; border-radius: 9px; }
+.seg-cierre button.on.r-PROMOVIDO { background: var(--verde); border-color: var(--verde); color: #fff; }
+.seg-cierre button.on.r-EGRESA { background: var(--azul); border-color: var(--azul); color: #fff; }
+.seg-cierre button.on.r-REPITE { background: var(--ambar); border-color: var(--ambar); color: #fff; }
+.seg-cierre button.on.r-BAJA { background: var(--rojo); border-color: var(--rojo); color: #fff; }
+select.mini { width: auto; min-height: 30px; padding: 2px 6px; font-size: 13px; display: inline-block; }
+.aviso.ok { background: var(--verde-suave); color: var(--verde); }

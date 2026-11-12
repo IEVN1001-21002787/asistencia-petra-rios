@@ -728,6 +728,8 @@ function vReportes() {
   $('#main').innerHTML = '<div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:14px">' +
     '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="vCalendario()">' + svg('hoy', 24) + 'Calendario escolar</button>' +
     '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="formRespaldo()">' + svg('lista', 24) + 'Listas de respaldo</button>' +
+    (puede('cargaMasiva') ? '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="vCarga()">' + svg('mas', 24) + 'Carga de alumnos (Excel)</button>' : '') +
+    (puede('cierreCiclo') ? '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="vCierre()">' + svg('hoy', 24) + 'Cierre de ciclo</button>' : '') +
     (puede('usuarios') ? '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px;grid-column:1/-1" onclick="vUsuarios()">' + svg('alumnos', 24) + 'Usuarios y accesos</button>' : '') + '</div>' +
     '<h3 style="margin-top:0">Concentrado de asistencia</h3><div class="card"><label>Grupo</label><select id="pGru" onchange="S.rep.grupo=this.value">' + opcionesGrupo(q.grupo) + '</select>' +
     '<div class="fila"><div class="crece"><label>Desde</label><input id="pIni" type="date" value="' + q.ini + '" onchange="S.rep.ini=this.value"></div>' +
@@ -1363,6 +1365,221 @@ async function guardarPersona(editar) {
       notas: $('#eNot').value, activo: editar ? $('#eAct').checked : true });
     cerrar(); toast('Datos guardados.'); vPersonal('maestros');
   } catch (e) { b.disabled = false; error(e); }
+}
+
+/* ---------------- Carga masiva de alumnos ---------------- */
+function cargarXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  const cargar = (src) => new Promise((ok, mal) => { const sc = document.createElement('script'); sc.src = src; sc.onload = () => ok(window.XLSX); sc.onerror = mal; document.head.appendChild(sc); });
+  return cargar('https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js').catch(() => cargar('lib/xlsx.full.min.js'));
+}
+const PLANTILLA = ['Apellido paterno', 'Apellido materno', 'Nombre(s)', 'CURP', 'Grupo', 'Tutor 1 nombre', 'Tutor 1 parentesco', 'Tutor 1 teléfono',
+  'Tutor 2 nombre', 'Tutor 2 parentesco', 'Tutor 2 teléfono', 'Tutor 3 nombre', 'Tutor 3 parentesco', 'Tutor 3 teléfono'];
+function vCarga() {
+  S.vista = 'reportes';
+  S.carga = null;
+  cab('Alta de muchos alumnos a la vez', 'Carga de alumnos');
+  $('#main').innerHTML = '<div class="card"><h3 style="margin-top:0">1. Descarga la plantilla</h3>' +
+    '<div class="tenue">Llénala en Excel: un alumno por renglón. Si ya tienes una lista de la SEG o de control escolar, también sirve: la app reconoce columnas como "Apellido paterno", "Nombre", "CURP", "Grupo" o "Grado" y "Grupo" por separado.</div>' +
+    '<div class="acciones"><button onclick="descargarPlantilla()">Descargar plantilla de Excel</button></div></div>' +
+    '<div class="card"><h3 style="margin-top:0">2. Sube el archivo</h3><input type="file" id="cArch" accept=".xlsx,.xls,.csv" onchange="leerArchivoCarga(this.files[0])">' +
+    '<div class="tenue" style="margin-top:6px">Excel (.xlsx) o CSV. Nada se guarda hasta que confirmes.</div></div><div id="cRes"></div>' +
+    '<div class="acciones"><button onclick="ir(\'reportes\')">Volver</button></div>';
+}
+async function descargarPlantilla() {
+  try {
+    const X = await cargarXLSX();
+    const wb = X.utils.book_new();
+    const ws = X.utils.aoa_to_sheet([PLANTILLA, ['LÓPEZ', 'RUIZ', 'ANA SOFÍA', 'LORA100101MGTPZNA1', '1G', 'MARÍA RUIZ', 'Madre', '4771234567', '', '', '', '', '', '']]);
+    ws['!cols'] = PLANTILLA.map((h) => ({ wch: Math.max(14, h.length + 2) }));
+    X.utils.book_append_sheet(wb, ws, 'Alumnos');
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['Instrucciones'], ['Un alumno por renglón. Borra el renglón de ejemplo.'],
+      ['Grupo: ' + S.ini.grupos.join(', ') + ' (también acepta 1°G o 1 G).'], ['Teléfono a 10 dígitos.'], ['La CURP evita duplicados; si no la tienes, deja la celda vacía.']]), 'Instrucciones');
+    X.writeFile(wb, 'Plantilla_alumnos.xlsx');
+  } catch (e) { toast('No se pudo crear la plantilla. Revisa tu conexión.', 'err'); }
+}
+const nk = (h) => String(h || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+/** Convierte los renglones de la hoja en alumnos, reconociendo los nombres de columna más comunes. */
+function mapearFilas(aoa) {
+  let hi = aoa.findIndex((r) => r.some((c) => /paterno|nombre|curp|alumno/.test(nk(c))));
+  if (hi < 0) return { error: 'No encontré los encabezados. Usa la plantilla o pon una fila con "Apellido paterno", "Nombre(s)", "Grupo".' };
+  const H = aoa[hi].map(nk);
+  const col = (...ks) => H.findIndex((h) => ks.some((k) => h === k || (k.length > 4 && h.indexOf(k) === 0)));
+  const c = { pat: col('apellidopaterno', 'paterno', 'primerapellido'), mat: col('apellidomaterno', 'materno', 'segundoapellido'),
+    nom: col('nombres', 'nombre', 'nombredelalumno'), comp: col('nombrecompleto', 'alumno', 'nombredelalumnoa'),
+    curp: col('curp'), grupo: col('grupo', 'gradoygrupo', 'gradogrupo'), grado: col('grado') };
+  const tut = [1, 2, 3].map((n) => ({ nom: col('tutor' + n + 'nombre', 'tutor' + n), par: col('tutor' + n + 'parentesco', 'parentesco' + n), tel: col('tutor' + n + 'telefono', 'telefono' + n, 'celular' + n) }));
+  if (tut[0].nom < 0) tut[0].nom = col('tutor', 'padreotutor', 'nombredeltutor', 'madrepadreotutor');
+  if (tut[0].par < 0) tut[0].par = col('parentesco');
+  if (tut[0].tel < 0) tut[0].tel = col('telefono', 'celular', 'telefonodeltutor');
+  if (c.grupo < 0) return { error: 'No encontré la columna "Grupo".' };
+  const v = (r, i) => (i >= 0 && r[i] !== undefined && r[i] !== null ? String(r[i]).trim() : '');
+  if (c.pat < 0 && c.comp < 0 && c.nom >= 0) { c.comp = c.nom; c.nom = -1; }
+  const aviso = c.pat < 0 && c.comp >= 0 ? 'Se separó el nombre completo como APELLIDO PATERNO, APELLIDO MATERNO y NOMBRE(S). Revísalo en la vista previa.' : '';
+  const filas = [];
+  aoa.slice(hi + 1).forEach((r, k) => {
+    if (!r || !r.some((x) => String(x || '').trim())) return;
+    let pat = v(r, c.pat), mat = v(r, c.mat), nom = v(r, c.nom);
+    if (!pat && c.comp >= 0) { const t = v(r, c.comp).split(/\s+/); pat = t[0] || ''; mat = t[1] || ''; nom = t.slice(2).join(' '); }
+    let grupo = v(r, c.grupo);
+    if (c.grado >= 0 && c.grado !== c.grupo && /^[A-Za-z]$/.test(grupo)) grupo = v(r, c.grado).replace(/\D/g, '') + grupo;
+    filas.push({ renglon: hi + k + 2, paterno: pat, materno: mat, nombres: nom, curp: v(r, c.curp), grupo: grupo,
+      tutores: tut.map((t) => ({ nombre: v(r, t.nom), parentesco: v(r, t.par), telefono: v(r, t.tel) })).filter((t) => t.nombre) });
+  });
+  return { filas: filas, aviso: aviso };
+}
+async function leerArchivoCarga(f) {
+  if (!f) return;
+  $('#cRes').innerHTML = '<div class="cargando">Leyendo ' + esc(f.name) + '…</div>';
+  try {
+    const X = await cargarXLSX();
+    const wb = X.read(await f.arrayBuffer(), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames.find((n) => !/instruc/i.test(n)) || wb.SheetNames[0]];
+    const m = mapearFilas(X.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }));
+    if (m.error) { $('#cRes').innerHTML = '<div class="aviso err">' + esc(m.error) + '</div>'; return; }
+    if (!m.filas.length) { $('#cRes').innerHTML = '<div class="aviso err">El archivo no tiene alumnos.</div>'; return; }
+    S.carga = { filas: m.filas, aviso: m.aviso, actualizar: false, nombre: f.name };
+    await validarCarga();
+  } catch (e) { $('#cRes').innerHTML = '<div class="aviso err">No se pudo leer el archivo: ' + esc(e.message || e) + '</div>'; }
+}
+async function enLotes(filas, op, alAvanzar) {
+  const res = [], tot = { altas: 0, actualizados: 0, contactos: 0 };
+  for (let i = 0; i < filas.length; i += 300) {
+    const r = await api('apiImportarAlumnos', filas.slice(i, i + 300), op);
+    res.push(...r.resultados); tot.altas += r.altas; tot.actualizados += r.actualizados; tot.contactos += r.contactos;
+    if (alAvanzar) alAvanzar(Math.min(i + 300, filas.length), filas.length);
+  }
+  return { resultados: res, tot: tot };
+}
+async function validarCarga() {
+  const C = S.carga;
+  $('#cRes').innerHTML = '<div class="cargando">Revisando ' + C.filas.length + ' alumnos…</div>';
+  try {
+    C.res = (await enLotes(C.filas, { validar: true, actualizar: C.actualizar })).resultados;
+    pintarCarga();
+  } catch (e) { $('#cRes').innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
+}
+const EST_CARGA = { NUEVO: ['Nuevo', 'SI'], ACTUALIZA: ['Se actualiza', 'R'], EXISTE: ['Ya existe', 'BAJA'], ERROR: ['Error', 'F'] };
+function pintarCarga(todos) {
+  const C = S.carga, n = (e) => C.res.filter((r) => r.estado === e).length;
+  const conAviso = C.res.filter((r) => r.avisos && r.avisos.length).length;
+  const orden = C.filas.map((f, i) => ({ f: f, r: C.res[i] })).sort((a, b) => ['ERROR', 'ACTUALIZA', 'EXISTE', 'NUEVO'].indexOf(a.r.estado) - ['ERROR', 'ACTUALIZA', 'EXISTE', 'NUEVO'].indexOf(b.r.estado));
+  const vis = todos ? orden : orden.slice(0, 60);
+  const cargables = n('NUEVO') + n('ACTUALIZA');
+  $('#cRes').innerHTML = '<div class="card"><h3 style="margin-top:0">3. Revisa antes de cargar</h3><div class="tenue">' + esc(C.nombre) + ' · ' + C.filas.length + ' renglones</div>' +
+    (C.aviso ? '<div class="aviso">' + esc(C.aviso) + '</div>' : '') +
+    '<div class="stats claro" style="margin-top:10px"><div class="stat"><b style="color:var(--verde)">' + n('NUEVO') + '</b><span>Nuevos</span></div>' +
+    '<div class="stat"><b>' + n('EXISTE') + '</b><span>Ya existen</span></div>' + (n('ACTUALIZA') ? '<div class="stat"><b class="amb">' + n('ACTUALIZA') + '</b><span>Se actualizan</span></div>' : '') +
+    '<div class="stat"><b class="mal">' + n('ERROR') + '</b><span>Con error</span></div></div>' +
+    (conAviso ? '<div class="tenue" style="margin-top:6px">' + conAviso + ' con avisos (por ejemplo, sin CURP o teléfono incompleto); sí se cargan.</div>' : '') +
+    '<label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" style="width:auto"' + (C.actualizar ? ' checked' : '') +
+    ' onchange="S.carga.actualizar=this.checked;validarCarga()"> Actualizar a los que ya existen (nombre, CURP, grupo y nuevos teléfonos)</label>' +
+    '<div class="scroll" style="margin-top:10px"><table class="tabla"><tr><th>Fila</th><th class="izq">Alumno</th><th>Grupo</th><th class="izq">Resultado</th></tr>' +
+    vis.map((x) => '<tr><td>' + x.f.renglon + '</td><td class="izq">' + esc([x.f.paterno, x.f.materno, x.f.nombres].join(' ')) + (x.f.curp ? '<br><span class="tenue" style="font-size:11px">' + esc(x.f.curp) + '</span>' : '') + '</td>' +
+      '<td>' + esc(x.f.grupo) + '</td><td class="izq">' + badge(EST_CARGA[x.r.estado][1], EST_CARGA[x.r.estado][0]) + ' ' + esc(x.r.mensaje || '') +
+      (x.r.avisos && x.r.avisos.length ? '<br><span class="tenue" style="font-size:12px">' + esc(x.r.avisos.join(' ')) + '</span>' : '') + '</td></tr>').join('') + '</table></div>' +
+    (!todos && orden.length > 60 ? '<button class="chico" onclick="pintarCarga(true)">Ver los ' + orden.length + ' renglones</button>' : '') +
+    (n('ERROR') ? '<div class="tenue" style="margin-top:8px">Los renglones con error no se cargan. Corrígelos en el Excel y vuelve a subirlo cuando quieras; los que ya se cargaron aparecerán como "Ya existen".</div>' : '') +
+    '<div class="acciones"><button class="prim" id="cBtn"' + (cargables ? '' : ' disabled') + ' onclick="aplicarCarga()">Cargar ' + cargables + ' alumno' + (cargables === 1 ? '' : 's') + '</button></div></div>';
+}
+async function aplicarCarga() {
+  const C = S.carga, b = $('#cBtn');
+  const filas = C.filas.filter((f, i) => C.res[i].estado === 'NUEVO' || C.res[i].estado === 'ACTUALIZA');
+  if (!confirm('¿Cargar ' + filas.length + ' alumnos?')) return;
+  b.disabled = true;
+  try {
+    const r = await enLotes(filas, { actualizar: C.actualizar }, (a, t) => { b.textContent = 'Cargando ' + a + ' de ' + t + '…'; });
+    $('#cRes').innerHTML = '<div class="aviso ok"><b>Listo.</b> ' + r.tot.altas + ' alumnos dados de alta' + (r.tot.actualizados ? ', ' + r.tot.actualizados + ' actualizados' : '') +
+      ' y ' + r.tot.contactos + ' contactos de tutores guardados.</div><div class="acciones"><button onclick="ir(\'alumnos\')">Ver alumnos</button><button onclick="vCarga()">Cargar otro archivo</button></div>';
+    toast('Carga terminada.');
+  } catch (e) { b.disabled = false; b.textContent = 'Reintentar'; error(e); }
+}
+
+/* ---------------- Cierre del ciclo escolar ---------------- */
+const RES_CIERRE = { PROMOVIDO: 'Pasa', REPITE: 'Repite', EGRESA: 'Egresa', BAJA: 'Baja' };
+async function vCierre() {
+  S.vista = 'reportes';
+  cab('Promoción, repetición y egreso', 'Cierre de ciclo');
+  cargando();
+  try {
+    S.cie = await api('apiCierre');
+    S.cieGrupo = S.cieGrupo && S.cie.grupos.indexOf(S.cieGrupo) >= 0 ? S.cieGrupo : S.cie.grupos[0];
+    pintarCierre();
+  } catch (e) { errVista(e); }
+}
+function resumenCierre() {
+  const t = { PROMOVIDO: 0, REPITE: 0, EGRESA: 0, BAJA: 0 };
+  S.cie.alumnos.forEach((a) => { t[a.resultado]++; });
+  return t;
+}
+function pintarCierre() {
+  const C = S.cie, t = resumenCierre();
+  const lista = C.alumnos.filter((a) => a.grupo === S.cieGrupo);
+  const grado = parseInt(S.cieGrupo, 10);
+  const gruposDe = (gr) => C.grupos.filter((g) => parseInt(g, 10) === gr);
+  $('#main').innerHTML = '<div class="aviso info">Ciclo <b>' + esc(C.ciclo) + '</b> → <b>' + esc(C.siguiente) + '</b>. De entrada, 1° y 2° pasan de año y 3° egresa. ' +
+    'Solo marca a quien <b>repite</b> o se da de <b>baja</b>. Nada se mueve hasta que toques "Aplicar cierre".</div>' +
+    '<div class="stats claro"><div class="stat"><b style="color:var(--verde)">' + t.PROMOVIDO + '</b><span>Pasan de año</span></div><div class="stat"><b class="amb">' + t.REPITE + '</b><span>Repiten</span></div>' +
+    '<div class="stat"><b style="color:var(--azul)">' + t.EGRESA + '</b><span>Egresan</span></div><div class="stat"><b class="mal">' + t.BAJA + '</b><span>Bajas</span></div></div>' +
+    '<div class="chips" style="margin:12px 0 8px">' + C.grupos.map((g) => {
+      const r = C.alumnos.filter((a) => a.grupo === g && (a.resultado === 'REPITE' || a.resultado === 'BAJA')).length;
+      return '<button class="chip-g' + (g === S.cieGrupo ? ' on' : '') + '" onclick="S.cieGrupo=\'' + g + '\';pintarCierre()">' + fG(g) + (r ? ' · ' + r : '') + '</button>';
+    }).join('') + '</div>' +
+    '<div class="card" style="padding:4px 12px">' + (lista.map((a) => {
+      const ops = grado >= 3 ? ['EGRESA', 'REPITE', 'BAJA'] : ['PROMOVIDO', 'REPITE', 'BAJA'];
+      const destino = a.resultado === 'PROMOVIDO' ? gruposDe(grado + 1) : a.resultado === 'REPITE' ? gruposDe(grado) : [];
+      return '<div class="cierre-fila"><div class="crece"><b>' + esc(a.nombre) + '</b>' +
+        (destino.length ? '<div class="tenue" style="font-size:12px">' + (a.resultado === 'PROMOVIDO' ? 'Pasa a ' : 'Repite en ') +
+          '<select class="mini" onchange="marcarCierre(\'' + a.id + '\',\'' + a.resultado + '\',this.value)">' + (a.grupoSiguiente ? '' : '<option value="">Elige…</option>') +
+          destino.map((g) => '<option value="' + g + '"' + (g === a.grupoSiguiente ? ' selected' : '') + '>' + fG(g) + '</option>').join('') + '</select></div>' : '') + '</div>' +
+        '<div class="seg-cierre">' + ops.map((o) => '<button class="' + (a.resultado === o ? 'on r-' + o : '') + '" onclick="marcarCierre(\'' + a.id + '\',\'' + o + '\')">' +
+          (o === 'PROMOVIDO' ? 'Pasa a ' + (grado + 1) + '°' : RES_CIERRE[o]) + '</button>').join('') + '</div></div>';
+    }).join('') || '<div class="tenue" style="padding:10px 0">Sin alumnos activos en este grupo.</div>') + '</div>' +
+    '<div class="acciones"><button onclick="imprimirCierre()">Imprimir resultados</button></div>' +
+    '<div class="card" style="margin-top:16px;border:1.5px solid var(--rojo-suave)"><h3 style="margin-top:0">Aplicar cierre del ciclo</h3>' +
+    '<div class="tenue">Al aplicarlo: los que pasan cambian de grupo, los que repiten se quedan en su grado, los de 3° quedan como egresados (su historial se conserva) y empieza el ciclo ' + esc(C.siguiente) + '. ' +
+    'Después podrás cargar a los alumnos nuevos de 1° desde "Carga de alumnos".</div>' +
+    (C.finCiclo && S.ini.hoy < C.finCiclo ? '<div class="aviso">El ciclo actual termina el ' + fF(C.finCiclo) + '. Puedes ir marcando desde ahora y aplicar al final.</div>' : '') +
+    '<div class="fila"><div class="crece"><label>Inicio del ciclo ' + esc(C.siguiente) + '</label><input type="date" id="zIni"></div><div class="crece"><label>Fin</label><input type="date" id="zFin"></div></div>' +
+    '<label>Escribe CERRAR para confirmar</label><input id="zConf" autocomplete="off" placeholder="CERRAR">' +
+    '<div class="acciones"><button class="peligro" onclick="aplicarCierre()">Aplicar cierre</button></div></div>' +
+    '<div class="acciones"><button onclick="ir(\'reportes\')">Volver</button></div>';
+}
+async function marcarCierre(id, resultado, grupo) {
+  const a = S.cie.alumnos.find((x) => x.id === id), grado = parseInt(a.grupo, 10), letra = a.grupo.replace(/^\d+/, '');
+  const antes = Object.assign({}, a);
+  if (grupo === undefined) {
+    const meta = resultado === 'PROMOVIDO' ? grado + 1 : grado;
+    grupo = resultado === 'PROMOVIDO' || resultado === 'REPITE' ? (S.cie.grupos.indexOf(meta + letra) >= 0 ? meta + letra : '') : '';
+  }
+  Object.assign(a, { resultado: resultado, grupoSiguiente: grupo, marcado: true });
+  pintarCierre();
+  if ((resultado === 'PROMOVIDO' || resultado === 'REPITE') && !grupo) return toast('Elige el grupo del próximo ciclo.', 'err');
+  try { await api('apiGuardarCierre', [{ id: id, resultado: resultado, grupoSiguiente: grupo }]); }
+  catch (e) { Object.assign(a, antes); pintarCierre(); error(e); }
+}
+async function aplicarCierre() {
+  const C = S.cie, t = resumenCierre();
+  const d = { confirmacion: $('#zConf').value, inicio: $('#zIni').value, fin: $('#zFin').value };
+  if (!d.inicio || !d.fin) return toast('Escribe las fechas de inicio y fin del nuevo ciclo.', 'err');
+  if (String(d.confirmacion).trim().toUpperCase() !== 'CERRAR') return toast('Escribe CERRAR para confirmar.', 'err');
+  if (!confirm('Se aplicará el cierre: ' + t.PROMOVIDO + ' pasan, ' + t.REPITE + ' repiten, ' + t.EGRESA + ' egresan y ' + t.BAJA + ' bajas. Esto no se puede deshacer desde la app. ¿Continuar?')) return;
+  try {
+    const r = await api('apiAplicarCierre', d);
+    S.ini.ciclo = r.ciclo;
+    $('#main').innerHTML = '<div class="aviso ok"><b>Ciclo ' + esc(r.ciclo) + ' iniciado.</b> ' + r.cuenta.PROMOVIDO + ' pasaron de año, ' + r.cuenta.REPITE + ' repiten, ' +
+      r.cuenta.EGRESA + ' egresaron y ' + r.cuenta.BAJA + ' bajas.</div><div class="tenue">Siguiente paso: carga a los alumnos de nuevo ingreso y revisa el calendario del nuevo ciclo.</div>' +
+      '<div class="acciones"><button class="prim" onclick="vCarga()">Cargar alumnos nuevos</button><button onclick="vCalendario()">Calendario</button></div>';
+  } catch (e) { error(e); }
+}
+function imprimirCierre() {
+  const C = S.cie;
+  imprimir('<div class="pagina">' + encabezadoDoc() + '<h3 style="text-align:center">Resultados del ciclo ' + esc(C.ciclo) + '</h3>' + C.grupos.map((g) => {
+    const l = C.alumnos.filter((a) => a.grupo === g);
+    if (!l.length) return '';
+    return '<h4>' + fG(g) + '</h4><table class="tabla"><tr><th>#</th><th class="izq">Alumno</th><th>Resultado</th><th>Grupo ' + esc(C.siguiente) + '</th></tr>' +
+      l.map((a, i) => '<tr><td>' + (i + 1) + '</td><td class="izq">' + esc(a.nombre) + '</td><td>' + (a.resultado === 'PROMOVIDO' ? 'Pasa' : RES_CIERRE[a.resultado]) + '</td><td>' + (a.grupoSiguiente ? fG(a.grupoSiguiente) : '—') + '</td></tr>').join('') + '</table>';
+  }).join('') + '</div>');
 }
 
 /* ---------------- Usuarios y accesos ---------------- */

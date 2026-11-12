@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.7';
+const VERSION = '2.8';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -30,6 +30,7 @@ const HOJAS = {
   Horario: ['Dia', 'Hora_Inicio', 'Hora_Fin', 'Grupo', 'Asignatura', 'ID_Personal'],
   Suplencias: ['ID_Sup', 'ID_Titular', 'ID_Suplente', 'Fecha_Inicio', 'Fecha_Fin', 'Motivo', 'Comentario', 'Estatus', 'Registro', 'Fecha_Registro'],
   Coberturas: ['Fecha', 'Hora_Inicio', 'Grupo', 'ID_Cubre', 'ID_Ausente', 'Registro', 'Fecha_Registro'],
+  Cierre_Ciclo: ['Ciclo', 'ID_Alumno', 'Resultado', 'Grupo_Siguiente', 'Registro', 'Actualizado'],
 };
 
 const IMPORTAR_ENCABEZADOS = ['Apellido_Paterno', 'Apellido_Materno', 'Nombres', 'CURP', 'Grupo',
@@ -78,6 +79,8 @@ const PERMISOS = {
   calendario: COMPLETO,
   personal: CON_PREFECTOS, // maestros, horario, suplencias: todos menos trabajo social
   editarHorario: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR'], // qué grupos y horas da cada maestro
+  cargaMasiva: COMPLETO,   // subir alumnos desde Excel
+  cierreCiclo: COMPLETO,   // promover, repetir, egresar
   usuarios: COMPLETO,      // dar o quitar acceso a la plataforma
 };
 
@@ -125,6 +128,7 @@ const ACCIONES = {
   apiHorario: apiHorario, apiGuardarClase: apiGuardarClase, apiClasesDia: apiClasesDia,
   apiRegistrarSuplencia: apiRegistrarSuplencia, apiTerminarSuplencia: apiTerminarSuplencia, apiBajaPersona: apiBajaPersona,
   apiAsignarCobertura: apiAsignarCobertura, apiAusencias: apiAusencias, apiGuardarClases: apiGuardarClases,
+  apiImportarAlumnos: apiImportarAlumnos, apiCierre: apiCierre, apiGuardarCierre: apiGuardarCierre, apiAplicarCierre: apiAplicarCierre,
 };
 
 let _correoActual = null;
@@ -261,6 +265,22 @@ function actualizar_(nombre, fila, obj) {
   const actual = r.getValues()[0].map(txt_);
   h.forEach(function (k, j) { if (obj[k] !== undefined) actual[j] = String(obj[k]); });
   r.setNumberFormat('@').setValues([actual]);
+  delete _cache[nombre];
+}
+
+/** Varias actualizaciones en una sola escritura. cambios: [{fila, obj}] */
+function actualizarVarios_(nombre, cambios) {
+  if (!cambios.length) return;
+  const h = HOJAS[nombre];
+  const s = sh_(nombre);
+  const ultima = s.getLastRow();
+  const r = s.getRange(2, 1, ultima - 1, h.length);
+  const v = r.getValues().map(function (f) { return f.map(txt_); });
+  cambios.forEach(function (c) {
+    const f = v[c.fila - 2];
+    h.forEach(function (k, j) { if (c.obj[k] !== undefined) f[j] = String(c.obj[k]); });
+  });
+  r.setNumberFormat('@').setValues(v);
   delete _cache[nombre];
 }
 
@@ -1751,6 +1771,227 @@ function apiBajaPersona(id, d) {
     });
     log_(u, 'PERSONAL', 'Baja ' + id + (d.pasarA ? ', horario a ' + d.pasarA + ' (' + clases + ' clases)' : ''));
     return { clases: clases };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* API: carga masiva de alumnos desde la app                          */
+/* ------------------------------------------------------------------ */
+
+function grupoNormal_(g) {
+  return String(g || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^0-9A-Z]/g, '');
+}
+
+/**
+ * filas: [{paterno, materno, nombres, curp, grupo, tutores: [{nombre, parentesco, telefono}]}]
+ * op: {validar: true} solo revisa; {actualizar: true} actualiza a los que ya existen (por CURP).
+ * Devuelve por fila: {estado: NUEVO|ACTUALIZA|EXISTE|ERROR, mensaje, avisos}.
+ */
+function apiImportarAlumnos(filas, op) {
+  const u = requiere_('cargaMasiva');
+  op = op || {};
+  if (!Array.isArray(filas) || !filas.length) throw new Error('No hay alumnos para cargar.');
+  if (filas.length > 300) throw new Error('Envía como máximo 300 alumnos por vez.');
+  const lock = op.validar ? null : LockService.getScriptLock();
+  if (lock) lock.waitLock(30000);
+  try {
+    _cache = {};
+    const grupos = grupos_();
+    const porCurp = {}, porNombre = {};
+    tabla_('Alumnos').forEach(function (a) {
+      if (a.CURP) porCurp[a.CURP] = a;
+      porNombre[norm_(nombre_(a)).replace(/\s+/g, ' ')] = a;
+    });
+    const telefonos = {};
+    tabla_('Contactos').forEach(function (c) { (telefonos[c.ID_Alumno] = telefonos[c.ID_Alumno] || {})[c.Telefono] = true; });
+    let max = parseInt(siguienteIdAlumno_().slice(1), 10) - 1;
+    const enArchivo = {};
+    const alumnos = [], contactos = [], hist = [], cambios = [];
+    const res = filas.map(function (f) {
+      const paterno = String(f.paterno || '').trim().toUpperCase().replace(/\s+/g, ' ');
+      const materno = String(f.materno || '').trim().toUpperCase().replace(/\s+/g, ' ');
+      const nombres = String(f.nombres || '').trim().toUpperCase().replace(/\s+/g, ' ');
+      const curp = String(f.curp || '').trim().toUpperCase().replace(/\s/g, '');
+      const grupo = grupoNormal_(f.grupo);
+      const avisos = [];
+      if (!paterno || !nombres) return { estado: 'ERROR', mensaje: 'Falta apellido paterno o nombre(s).' };
+      if (grupos.indexOf(grupo) < 0) return { estado: 'ERROR', mensaje: 'El grupo "' + (f.grupo || '') + '" no existe.' };
+      if (curp && !/^[A-Z0-9]{18}$/.test(curp)) return { estado: 'ERROR', mensaje: 'La CURP debe tener 18 letras y números.' };
+      const clave = curp || norm_([paterno, materno, nombres].join(' '));
+      if (enArchivo[clave]) return { estado: 'ERROR', mensaje: 'Repetido en el archivo (renglón ' + enArchivo[clave] + ').' };
+      enArchivo[clave] = f.renglon || true;
+      const tutores = (f.tutores || []).map(function (t) {
+        const tel = String(t.telefono || '').replace(/\D/g, '').replace(/^52(?=\d{10}$)/, '');
+        if (tel && tel.length !== 10) avisos.push('Teléfono de ' + (t.nombre || 'tutor') + ' no tiene 10 dígitos; no se guardó.');
+        return { nombre: String(t.nombre || '').trim().toUpperCase(), parentesco: String(t.parentesco || '').trim(), telefono: tel.length === 10 ? tel : '' };
+      }).filter(function (t) { return t.nombre; });
+      if (!curp) avisos.push('Sin CURP.');
+      const existente = (curp && porCurp[curp]) || porNombre[norm_([paterno, materno, nombres].filter(String).join(' ')).replace(/\s+/g, ' ')];
+      if (existente) {
+        if (!op.actualizar) return { estado: 'EXISTE', mensaje: 'Ya está registrado (' + existente.ID_Alumno + ', ' + existente.Grupo_Actual + ').', avisos: avisos };
+        if (!op.validar) {
+          const obj = { Apellido_Paterno: paterno, Apellido_Materno: materno, Nombres: nombres };
+          if (curp) obj.CURP = curp;
+          if (existente.Estatus === 'ACTIVO' && existente.Grupo_Actual !== grupo) {
+            obj.Grupo_Actual = grupo;
+            hist.push(historial_(u, existente.ID_Alumno, existente.Grupo_Actual, grupo, 'CAMBIO_GRUPO', 'Carga masiva'));
+          }
+          cambios.push({ fila: existente._fila, obj: obj });
+          const ya = telefonos[existente.ID_Alumno] || {};
+          tutores.forEach(function (t, k) {
+            if (t.telefono && ya[t.telefono]) return;
+            contactos.push({ ID_Contacto: nuevoId_('C') + k + alumnos.length + cambios.length, ID_Alumno: existente.ID_Alumno, Nombre: t.nombre, Parentesco: t.parentesco, Telefono: t.telefono, Autorizado: 'SI' });
+          });
+        }
+        return { estado: 'ACTUALIZA', mensaje: existente.ID_Alumno + (existente.Grupo_Actual !== grupo ? ': de ' + existente.Grupo_Actual + ' a ' + grupo : ''), avisos: avisos };
+      }
+      max++;
+      const id = 'A' + ('0000' + max).slice(-4);
+      if (!op.validar) {
+        alumnos.push({ ID_Alumno: id, Apellido_Paterno: paterno, Apellido_Materno: materno, Nombres: nombres, CURP: curp,
+          Grupo_Actual: grupo, Estatus: 'ACTIVO', Fecha_Alta: hoy_(), Notas: '' });
+        hist.push(historial_(u, id, '', grupo, 'ALTA', 'Carga masiva'));
+        tutores.forEach(function (t, k) {
+          contactos.push({ ID_Contacto: nuevoId_('C') + k + alumnos.length, ID_Alumno: id, Nombre: t.nombre, Parentesco: t.parentesco, Telefono: t.telefono, Autorizado: 'SI' });
+        });
+      }
+      return { estado: 'NUEVO', mensaje: op.validar ? 'Se dará de alta en ' + grupo : 'Alta ' + id + ' en ' + grupo, avisos: avisos };
+    });
+    if (!op.validar) {
+      actualizarVarios_('Alumnos', cambios);
+      agregar_('Alumnos', alumnos);
+      agregar_('Contactos', contactos);
+      agregar_('Historial_Grupos', hist);
+      log_(u, 'CARGA_MASIVA', alumnos.length + ' altas, ' + cambios.length + ' actualizados, ' + contactos.length + ' contactos');
+    }
+    return { resultados: res, altas: alumnos.length, actualizados: cambios.length, contactos: contactos.length };
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* API: cierre del ciclo escolar                                       */
+/* ------------------------------------------------------------------ */
+
+function cicloSiguiente_(ciclo) {
+  const p = String(ciclo || '').split('-').map(Number);
+  return p.length === 2 && p[0] ? (p[0] + 1) + '-' + (p[1] + 1) : '';
+}
+
+/** Lo que pasaría con cada alumno activo si no se marca nada: 1° y 2° pasan, 3° egresa. */
+function decisionDefecto_(a, grupos) {
+  const grado = parseInt(a.Grupo_Actual, 10);
+  const letra = a.Grupo_Actual.replace(/^\d+/, '');
+  if (grado >= 3) return { resultado: 'EGRESA', grupo: '' };
+  const sig = (grado + 1) + letra;
+  return { resultado: 'PROMOVIDO', grupo: grupos.indexOf(sig) >= 0 ? sig : '' };
+}
+
+function decisiones_(ciclo) {
+  const m = {};
+  tabla_('Cierre_Ciclo').forEach(function (r) { if (r.Ciclo === ciclo) m[r.ID_Alumno] = r; });
+  return m;
+}
+
+function apiCierre() {
+  requiere_('cierreCiclo');
+  const c = config_();
+  const grupos = grupos_();
+  const dec = decisiones_(c.CICLO);
+  const alumnos = ordenarAlumnos_(tabla_('Alumnos').filter(function (a) { return a.Estatus === 'ACTIVO'; })).map(function (a) {
+    const d = dec[a.ID_Alumno];
+    const def = decisionDefecto_(a, grupos);
+    return { id: a.ID_Alumno, nombre: nombre_(a), grupo: a.Grupo_Actual,
+      resultado: d ? d.Resultado : def.resultado, grupoSiguiente: d ? d.Grupo_Siguiente : def.grupo, marcado: !!d };
+  });
+  return { ciclo: c.CICLO, siguiente: cicloSiguiente_(c.CICLO), finCiclo: c.FIN_CICLO, grupos: grupos, alumnos: alumnos };
+}
+
+const RESULTADOS_CIERRE = ['PROMOVIDO', 'REPITE', 'EGRESA', 'BAJA'];
+
+/** cambios: [{id, resultado, grupoSiguiente}] — solo guarda la decisión; no mueve a nadie todavía. */
+function apiGuardarCierre(cambios) {
+  const u = requiere_('cierreCiclo');
+  if (!Array.isArray(cambios) || !cambios.length) throw new Error('No hay cambios.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const c = config_(), grupos = grupos_(), al = mapaAlumnos_(), dec = decisiones_(c.CICLO);
+    const nuevos = [], act = [];
+    cambios.forEach(function (x) {
+      const a = al[x.id];
+      if (!a || a.Estatus !== 'ACTIVO') throw new Error('Alumno no válido: ' + x.id);
+      if (RESULTADOS_CIERRE.indexOf(x.resultado) < 0) throw new Error('Resultado no válido.');
+      const grado = parseInt(a.Grupo_Actual, 10);
+      if (x.resultado === 'EGRESA' && grado < 3) throw new Error('Solo egresan alumnos de 3°.');
+      if (x.resultado === 'PROMOVIDO' && grado >= 3) throw new Error('Los de 3° egresan; no pasan a otro grado.');
+      let g = '';
+      if (x.resultado === 'PROMOVIDO' || x.resultado === 'REPITE') {
+        g = grupoNormal_(x.grupoSiguiente);
+        if (grupos.indexOf(g) < 0) throw new Error('Selecciona el grupo del próximo ciclo para ' + nombre_(a) + '.');
+        const gradoSig = parseInt(g, 10);
+        if (x.resultado === 'PROMOVIDO' && gradoSig !== grado + 1) throw new Error('Si pasa de año, el grupo debe ser de ' + (grado + 1) + '°.');
+        if (x.resultado === 'REPITE' && gradoSig !== grado) throw new Error('Si repite, el grupo debe ser de ' + grado + '°.');
+      }
+      const obj = { Ciclo: c.CICLO, ID_Alumno: x.id, Resultado: x.resultado, Grupo_Siguiente: g, Registro: u.email, Actualizado: sello_() };
+      if (dec[x.id]) act.push({ fila: dec[x.id]._fila, obj: obj }); else nuevos.push(obj);
+    });
+    actualizarVarios_('Cierre_Ciclo', act);
+    agregar_('Cierre_Ciclo', nuevos);
+    return { guardados: cambios.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** d: {confirmacion: 'CERRAR', inicio?, fin?} Aplica las decisiones a todos los alumnos activos y abre el ciclo siguiente. */
+function apiAplicarCierre(d) {
+  const u = requiere_('cierreCiclo');
+  d = d || {};
+  if (String(d.confirmacion || '').trim().toUpperCase() !== 'CERRAR') throw new Error('Escribe CERRAR para confirmar.');
+  validarFecha_(d.inicio, 'inicio del nuevo ciclo');
+  validarFecha_(d.fin, 'fin del nuevo ciclo');
+  if (d.fin <= d.inicio) throw new Error('El fin del nuevo ciclo debe ser después del inicio.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    _cache = {};
+    const c = config_(), grupos = grupos_(), dec = decisiones_(c.CICLO);
+    const sig = cicloSiguiente_(c.CICLO);
+    if (!sig) throw new Error('Revisa el ciclo actual en Config (formato 2026-2027).');
+    const cambios = [], hist = [], cuenta = { PROMOVIDO: 0, REPITE: 0, EGRESA: 0, BAJA: 0 }, faltan = [];
+    const fecha = hoy_();
+    tabla_('Alumnos').forEach(function (a) {
+      if (a.Estatus !== 'ACTIVO') return;
+      const x = dec[a.ID_Alumno];
+      const def = decisionDefecto_(a, grupos);
+      const res = x ? x.Resultado : def.resultado;
+      const g = x ? x.Grupo_Siguiente : def.grupo;
+      if ((res === 'PROMOVIDO' || res === 'REPITE') && grupos.indexOf(g) < 0) { faltan.push(nombre_(a) + ' (' + a.Grupo_Actual + ')'); return; }
+      cuenta[res]++;
+      const h = function (nuevo, mov, motivo, ciclo) { const o = historial_(u, a.ID_Alumno, a.Grupo_Actual, nuevo, mov, motivo, fecha); o.Ciclo = ciclo; return o; };
+      if (res === 'EGRESA') { cambios.push({ fila: a._fila, obj: { Estatus: 'EGRESADO' } }); hist.push(h('', 'EGRESO', 'Terminó la secundaria', c.CICLO)); }
+      else if (res === 'BAJA') { cambios.push({ fila: a._fila, obj: { Estatus: 'BAJA' } }); hist.push(h('', 'BAJA', 'Cierre del ciclo ' + c.CICLO, c.CICLO)); }
+      else if (res === 'REPITE') { cambios.push({ fila: a._fila, obj: { Grupo_Actual: g } }); hist.push(h(g, 'REPITE', 'Recursa ' + parseInt(a.Grupo_Actual, 10) + '° en ' + sig, sig)); }
+      else { cambios.push({ fila: a._fila, obj: { Grupo_Actual: g } }); hist.push(h(g, 'PROMOCION', 'Ciclo ' + sig, sig)); }
+    });
+    if (faltan.length) throw new Error('Falta el grupo del próximo ciclo para: ' + faltan.slice(0, 8).join(', ') + (faltan.length > 8 ? ' y ' + (faltan.length - 8) + ' más' : '') + '.');
+    actualizarVarios_('Alumnos', cambios);
+    agregar_('Historial_Grupos', hist);
+    const valores = { CICLO: sig, INICIO_CICLO: d.inicio, FIN_CICLO: d.fin };
+    const filas = {};
+    tabla_('Config').forEach(function (r) { filas[r.Clave] = r._fila; });
+    Object.keys(valores).forEach(function (k) {
+      if (filas[k]) actualizar_('Config', filas[k], { Valor: valores[k] });
+      else agregar_('Config', [{ Clave: k, Valor: valores[k], Descripcion: '' }]);
+    });
+    _cache = {};
+    log_(u, 'CIERRE_CICLO', c.CICLO + ' → ' + sig + ': ' + JSON.stringify(cuenta));
+    return { cicloAnterior: c.CICLO, ciclo: sig, cuenta: cuenta };
   } finally {
     lock.releaseLock();
   }
