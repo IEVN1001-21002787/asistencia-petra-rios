@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.5';
+const VERSION = '2.6';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -82,14 +82,17 @@ const PERMISOS = {
 
 /** Incidencias del personal. "rango" = puede durar varios días; "hora" = pide la hora. */
 const TIPOS_INCIDENCIA = {
-  FALTA: { t: 'Falta', rango: true },
-  RETARDO: { t: 'Retardo', hora: true },
-  SALIDA: { t: 'Salida antes de tiempo', hora: true },
-  LICENCIA_MEDICA: { t: 'Licencia médica', rango: true },
-  PERMISO: { t: 'Permiso', rango: true },
-  COMISION: { t: 'Comisión', rango: true },
-  OTRO: { t: 'Otro', rango: true },
+  FALTA: { t: 'Falta', s: 'F', rango: true },
+  RETARDO: { t: 'Retardo', s: 'R', hora: true },
+  SALIDA: { t: 'Salida antes de tiempo', s: 'S', hora: true },
+  LICENCIA_MEDICA: { t: 'Licencia médica', s: 'LM', rango: true },
+  PERMISO_ECONOMICO: { t: 'Permiso económico', s: 'PE', rango: true },
+  PERMISO: { t: 'Otro permiso', s: 'P', rango: true },
+  COMISION: { t: 'Comisión', s: 'C', rango: true },
+  OTRO: { t: 'Otro', s: 'O', rango: true },
 };
+/** Puestos que pueden cubrir un grupo además de los docentes. */
+const PUESTOS_APOYO_GRUPO = ['Prefectura', 'Subdirección', 'Dirección'];
 const PUESTOS = ['Docente', 'Dirección', 'Subdirección', 'Prefectura', 'Psicología', 'Trabajo social', 'Administrativo', 'Intendencia', 'Apoyo'];
 
 const TIPOS_SIN_CLASE = {
@@ -1166,7 +1169,7 @@ function incidencia_(r, mp) {
   const p = mp[r.ID_Personal];
   const tipo = TIPOS_INCIDENCIA[r.Tipo] ? r.Tipo : 'OTRO';
   return { id: r.ID_Inc, inicio: r.Fecha_Inicio, fin: r.Fecha_Fin || r.Fecha_Inicio, idPersona: r.ID_Personal,
-    nombre: p ? p.Nombre : r.ID_Personal, puesto: p ? p.Puesto : '', tipo: tipo, tipoTexto: TIPOS_INCIDENCIA[tipo].t,
+    nombre: p ? p.Nombre : r.ID_Personal, puesto: p ? p.Puesto : '', tipo: tipo, tipoTexto: TIPOS_INCIDENCIA[tipo].t, sigla: TIPOS_INCIDENCIA[tipo].s,
     hora: r.Hora, horasClase: r.Horas_Clase, grupos: r.Grupos, cubrio: r.Cubrio, documento: r.Documento,
     comentario: r.Comentario, registro: r.Registro, fechaRegistro: r.Fecha_Registro };
 }
@@ -1506,6 +1509,7 @@ function clasesDeFecha_(fecha, D) {
     const quien = s ? s.ID_Suplente : r.ID_Personal;
     const incs = inc[quien] || [];
     let estado = 'OK', cubre = null;
+    const aus = incs.find(function (i) { return !NO_AUSENCIA[i.tipo]; });
     if (!r.ID_Personal) estado = 'SIN_ASIGNAR';
     else if (ausente(quien)) {
       cubre = cob[r.Hora_Inicio + '|' + r.Grupo];
@@ -1517,7 +1521,8 @@ function clasesDeFecha_(fecha, D) {
     else if (s) estado = 'SUPLENTE';
     return { ini: r.Hora_Inicio, fin: r.Hora_Fin, grupo: r.Grupo, asignatura: r.Asignatura,
       idTitular: r.ID_Personal, titular: nom(r.ID_Personal), idMaestro: quien, maestro: nom(quien), suplente: !!s,
-      idCubre: cubre ? cubre.ID_Cubre : '', cubre: cubre ? nom(cubre.ID_Cubre) : '',
+      idCubre: cubre ? cubre.ID_Cubre : '', cubre: cubre ? nom(cubre.ID_Cubre) : '', puestoCubre: cubre && mp[cubre.ID_Cubre] ? mp[cubre.ID_Cubre].Puesto : '',
+      sigla: aus ? aus.sigla : '', motivo: aus ? aus.tipoTexto : '', ausDesde: aus ? aus.inicio : '', ausHasta: aus ? aus.fin : '',
       estado: estado, incidencias: incs.map(function (i) { return i.tipoTexto + (i.hora ? ' ' + i.hora : ''); }) };
   });
 }
@@ -1533,14 +1538,19 @@ function libresDeFecha_(fecha, clases, D) {
     (ocupados[c.ini] = ocupados[c.ini] || {})[c.idMaestro] = true;
     if (c.idCubre) ocupados[c.ini][c.idCubre] = true;
   });
-  const docentes = Object.keys(D.mp).map(function (id) { return D.mp[id]; }).filter(function (p) {
-    return String(p.Activo).toUpperCase() !== 'NO' && p.Puesto === 'Docente' && !ausentes[p.ID_Personal];
-  }).sort(function (a, b) { return a.Nombre.localeCompare(b.Nombre, 'es'); });
-  const out = {};
-  modulos_().forEach(function (m) {
-    out[m.ini] = docentes.filter(function (p) { return !(ocupados[m.ini] || {})[p.ID_Personal]; })
-      .map(function (p) { return { id: p.ID_Personal, nombre: p.Nombre }; });
-  });
+  const presentes = function (f) {
+    return Object.keys(D.mp).map(function (id) { return D.mp[id]; }).filter(function (p) {
+      return String(p.Activo).toUpperCase() !== 'NO' && f(p) && !ausentes[p.ID_Personal];
+    }).sort(function (a, b) { return a.Nombre.localeCompare(b.Nombre, 'es'); });
+  };
+  const docentes = presentes(function (p) { return p.Puesto === 'Docente'; });
+  const apoyo = presentes(function (p) { return PUESTOS_APOYO_GRUPO.indexOf(p.Puesto) >= 0; });
+  const libres = function (lista, ini) {
+    return lista.filter(function (p) { return !(ocupados[ini] || {})[p.ID_Personal]; })
+      .map(function (p) { return { id: p.ID_Personal, nombre: p.Nombre, puesto: p.Puesto }; });
+  };
+  const out = { docentes: {}, apoyo: {} };
+  modulos_().forEach(function (m) { out.docentes[m.ini] = libres(docentes, m.ini); out.apoyo[m.ini] = libres(apoyo, m.ini); });
   return out;
 }
 
@@ -1551,8 +1561,15 @@ function apiClasesDia(fecha) {
   const clases = clasesDeFecha_(fecha, D);
   const dia = parseF_(fecha).getDay();
   const c = config_();
+  const L = libresDeFecha_(fecha, clases, D);
+  const ausentes = D.incs.filter(function (r) { return !NO_AUSENCIA[r.Tipo] && r.Fecha_Inicio <= fecha && (r.Fecha_Fin || r.Fecha_Inicio) >= fecha; })
+    .map(function (r) { const i = incidencia_(r, D.mp); return { idPersona: i.idPersona, nombre: i.nombre, puesto: i.puesto, sigla: i.sigla, motivo: i.tipoTexto, inicio: i.inicio, fin: i.fin }; })
+    .sort(function (a, b) { return a.nombre.localeCompare(b.nombre, 'es'); });
+  const siglas = {};
+  Object.keys(TIPOS_INCIDENCIA).forEach(function (k) { if (!NO_AUSENCIA[k]) siglas[TIPOS_INCIDENCIA[k].s] = TIPOS_INCIDENCIA[k].t; });
   return { fecha: fecha, dia: dia, diaNombre: DIAS_SEMANA[dia] || '', habil: esHabil_(fecha), modulos: modulos_(), grupos: grupos_(),
-    clases: clases, libres: libresDeFecha_(fecha, clases, D), turno: c.TURNO, vobo: [c.VOBO_1 || '', c.VOBO_2 || ''], escuela: c.ESCUELA };
+    clases: clases, libres: L.docentes, apoyo: L.apoyo, ausentes: ausentes, siglas: siglas,
+    turno: c.TURNO, vobo: [c.VOBO_1 || '', c.VOBO_2 || ''], escuela: c.ESCUELA };
 }
 
 /** d: {fecha, ini, grupo, idCubre}. Sin idCubre se quita la cobertura. */

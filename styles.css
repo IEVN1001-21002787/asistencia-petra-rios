@@ -233,3 +233,7 @@ button.peligro { color: var(--rojo); border-color: var(--rojo); }
 .dias-aus button.amb { background: var(--ambar-suave); border-color: #E8C58F; }
 .dias-aus button.amb small { color: var(--ambar); }
 .pestanas button { font-size: 13px; }
+
+table.horario .aus { opacity: .55; }
+.sigla { display: inline-block; font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 6px; background: var(--rojo); color: #fff; letter-spacing: .3px; }
+.card .sigla { min-width: 30px; text-align: center; }

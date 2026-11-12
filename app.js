@@ -780,8 +780,8 @@ async function exportar() {
 }
 
 /* ---------------- Vista: Personal (solo prefectura y subdirección) ---------------- */
-const TIPO_CIRC = { FALTA: 'F', RETARDO: 'R', SALIDA: 'S', LICENCIA_MEDICA: 'J', PERMISO: 'S', COMISION: 'S', OTRO: 'S' };
-const TIPO_CORTO = { FALTA: 'Faltas', RETARDO: 'Retardos', SALIDA: 'Salidas', LICENCIA_MEDICA: 'Licencia', PERMISO: 'Permiso', COMISION: 'Comisión', OTRO: 'Otro' };
+const TIPO_CIRC = { FALTA: 'F', RETARDO: 'R', SALIDA: 'S', LICENCIA_MEDICA: 'J', PERMISO_ECONOMICO: 'S', PERMISO: 'S', COMISION: 'S', OTRO: 'S' };
+const TIPO_CORTO = { FALTA: 'Faltas', RETARDO: 'Retardos', SALIDA: 'Salidas', LICENCIA_MEDICA: 'Licencia', PERMISO_ECONOMICO: 'P. econ.', PERMISO: 'Otro perm.', COMISION: 'Comisión', OTRO: 'Otro' };
 function txtInc(i) {
   const fechas = i.fin && i.fin !== i.inicio ? fC(i.inicio) + ' al ' + fC(i.fin) : fC(i.inicio);
   return [fechas, i.hora ? i.hora : '', i.horasClase ? i.horasClase + ' h de clase' : '', i.grupos, i.cubrio ? 'cubrió ' + i.cubrio : '', i.documento]
@@ -850,9 +850,13 @@ function rejillaClases(d, editable) {
           : c && (c.estado === 'SIN_MAESTRO' || c.estado === 'CUBIERTA') ? ' onclick="formCobertura(\'' + m.ini + '\',\'' + esc(g) + '\')"'
           : (c && c.idMaestro ? ' onclick="vPersona(\'' + esc(c.idMaestro) + '\')"' : '');
         if (!c) return '<td class="k-libre"' + clic + '>—</td>';
+        if (c.estado === 'SIN_MAESTRO' || c.estado === 'CUBIERTA') {
+          return '<td class="' + ESTADO_CLASE[c.estado] + '"' + clic + '><b>' + esc(c.asignatura) + '</b><br><span class="aus">' + esc(corto(c.maestro)) + '</span> <b class="sigla">' + esc(c.sigla || '') + '</b>' +
+            (c.estado === 'CUBIERTA' ? '<br><b>Cubre: ' + esc(corto(c.cubre)) + '</b>' : '<br><b>Sin cubrir</b><br><i>toca para asignar</i>') + '</td>';
+        }
         return '<td class="' + (ESTADO_CLASE[c.estado] || '') + '"' + clic + '><b>' + esc(c.asignatura) + '</b><br>' + esc(corto(c.maestro || c.nombre || '')) +
           (c.estado === 'SUPLENTE' ? '<br><i>suple a ' + esc(corto(c.titular)) + '</i>' : '') +
-          (c.estado === 'SIN_MAESTRO' ? '<br><i>Sin maestro · toca para asignar</i>' : '') + (c.estado === 'CUBIERTA' ? '<br><i>cubre ' + esc(corto(c.cubre)) + '</i>' : '') + (c.estado === 'RETARDO' || c.estado === 'SALIDA' ? '<br><i>' + esc((c.incidencias || []).join(', ')) + '</i>' : '') + '</td>';
+ (c.estado === 'RETARDO' || c.estado === 'SALIDA' ? '<br><i>' + esc((c.incidencias || []).join(', ')) + '</i>' : '') + '</td>';
       }).join('') + '</tr>';
     }).join('') + '</table></div>';
 }
@@ -869,7 +873,11 @@ async function pintarClasesDia() {
     const n = (e) => d.clases.filter((c) => c.estado === e).length;
     el.innerHTML = (d.habil ? '' : '<div class="aviso">Este día está marcado sin clase en el calendario.</div>') +
       '<div class="leyenda"><span class="k-sin">Sin maestro ' + n('SIN_MAESTRO') + '</span><span class="k-cub">Cubiertas ' + n('CUBIERTA') + '</span><span class="k-sup">Con suplente ' + n('SUPLENTE') + '</span>' +
-      '<span class="k-ret">Retardo ' + n('RETARDO') + '</span><span>Sin incidencia ' + n('OK') + '</span></div>' + rejillaClases(d, false);
+      '<span class="k-ret">Retardo ' + n('RETARDO') + '</span><span>Sin incidencia ' + n('OK') + '</span></div>' + rejillaClases(d, false) +
+      (d.ausentes && d.ausentes.length ? '<div class="card" style="margin-top:10px"><b>Personal ausente este día</b>' + d.ausentes.map((a) =>
+        '<div class="fila" style="margin-top:6px;font-size:14px"><b class="sigla">' + esc(a.sigla) + '</b><span class="crece">' + esc(a.nombre) + ' <span class="tenue">· ' + esc(a.puesto) + ' · ' +
+        (a.inicio === a.fin ? 'solo este día' : 'del ' + fC(a.inicio) + ' al ' + fC(a.fin)) + '</span></span></div>').join('') +
+        '<div class="tenue" style="margin-top:8px;font-size:12px">' + Object.keys(d.siglas || {}).map((k) => '<b>' + k + '</b> ' + esc(d.siglas[k].toLowerCase())).join(' · ') + '</div></div>' : '');
   } catch (e) { el.innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
 }
 function lunesDe(f) { const p = f.split('-').map(Number); const d = new Date(p[0], p[1] - 1, p[2]); const w = d.getDay() || 7; d.setDate(d.getDate() - w + 1); return d; }
@@ -882,12 +890,16 @@ function paginaFirmas(d, fecha) {
     const receso = ant && ant !== m.ini ? '<tr><td colspan="' + (d.grupos.length + 2) + '" class="f-receso">R &nbsp; E &nbsp; C &nbsp; E &nbsp; S &nbsp; O</td></tr>' : '';
     ant = m.fin;
     const obs = d.grupos.map((g) => mapa[m.ini + '|' + g]).filter((c) => c && fecha && ['SIN_MAESTRO', 'CUBIERTA', 'RETARDO', 'SALIDA'].indexOf(c.estado) >= 0)
-      .map((c) => fG(c.grupo) + ': ' + (c.estado === 'SIN_MAESTRO' ? 'sin maestro' : c.estado === 'CUBIERTA' ? 'falta ' + corto(c.maestro) + ', cubre ' + corto(c.cubre) : (c.incidencias || []).join(', ').toLowerCase())).join('<br>');
+      .map((c) => '<b>' + fG(c.grupo) + '</b> ' + (c.estado === 'SIN_MAESTRO' ? '<b>' + esc(c.sigla) + '</b> sin cubrir'
+        : c.estado === 'CUBIERTA' ? '<b>' + esc(c.sigla) + '</b> cubre ' + esc(corto(c.cubre)) : esc((c.incidencias || []).join(', ').toLowerCase()))).join('<br>');
     return receso + '<tr class="f-asig"><td rowspan="2" class="f-hora">' + h12(m.ini) + '-' + h12(m.fin) + '</td>' + d.grupos.map((g) => '<td>' + esc((mapa[m.ini + '|' + g] || {}).asignatura || '') + '</td>').join('') +
       '<td rowspan="2" class="f-obs">' + obs + '</td></tr><tr class="f-nom">' + d.grupos.map((g) => {
         const c = mapa[m.ini + '|' + g] || {};
-        const nom = c.estado === 'CUBIERTA' ? c.cubre : (c.maestro || c.nombre || '');
-        return '<td>' + esc(nom) + (c.estado === 'CUBIERTA' ? '<br><small>(cubre a ' + esc(c.maestro) + ')</small>' : c.suplente ? '<br><small>(suple a ' + esc(c.titular) + ')</small>' : '') + '</td>';
+        if (c.estado === 'SIN_MAESTRO' || c.estado === 'CUBIERTA') {
+          return '<td class="f-falta"><span class="f-aus">' + esc(c.maestro) + '</span> <b class="f-sig">' + esc(c.sigla) + '</b><br>' +
+            (c.estado === 'CUBIERTA' ? '<b>CUBRE: ' + esc(c.cubre) + '</b>' : '<b class="f-sin">SIN CUBRIR</b>') + '</td>';
+        }
+        return '<td>' + esc(c.maestro || c.nombre || '') + (c.suplente ? '<br><small>(suple a ' + esc(c.titular) + ')</small>' : '') + '</td>';
       }).join('') + '</tr>';
   }).join('');
   const dias = ['', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES'];
@@ -895,11 +907,16 @@ function paginaFirmas(d, fecha) {
     '<div class="f-cab"><span>TURNO: ' + esc(d.turno || '') + '</span><span>REGISTRO DE FIRMAS</span><span></span></div>' +
     '<div class="f-cab"><span>DÍA: ' + dias[d.dia] + '</span><span></span><span>FECHA: ' + (fecha ? fF(fecha) : '______________________') + '</span></div>' +
     '<table class="f-tabla"><tr><th>HORA/GRUPO</th>' + d.grupos.map((g) => '<th>' + fG(g) + '</th>').join('') + '<th>OBSERVACIONES</th></tr>' + filas + '</table>' +
+    (fecha && d.ausentes && d.ausentes.length ? '<div class="f-ausentes"><b>PERSONAL AUSENTE:</b> ' + d.ausentes.map((a) => '<b>' + esc(a.sigla) + '</b> ' + esc(a.nombre) +
+      ' (' + esc(a.puesto) + (a.inicio === a.fin ? '' : ', del ' + fC(a.inicio) + ' al ' + fC(a.fin)) + ')').join(' &nbsp;·&nbsp; ') +
+      '<br><span class="f-ley">' + Object.keys(d.siglas || {}).map((k) => '<b>' + k + '</b> ' + esc(d.siglas[k].toLowerCase())).join(' · ') + ' · nombre en gris = no atiende el grupo</span></div>' : '') +
     '<div class="firmas"><div>' + esc(d.vobo[0] || '') + '<br>Vo.Bo.</div><div>' + esc(d.vobo[1] || '') + '<br>Vo.Bo.</div></div></div>';
 }
 const ESTILO_FIRMAS = '<style>@page{size:landscape;margin:8mm}.hoja-firmas .f-tabla{width:100%;border-collapse:collapse;font-size:9px}.f-tabla th,.f-tabla td{border:1px solid #000;padding:2px;text-align:center;vertical-align:bottom}' +
   '.f-tabla th{background:#bbb}.f-asig td{background:#ddd;font-weight:700;vertical-align:middle}.f-nom td{height:44px}.f-hora{font-weight:700;vertical-align:middle!important;white-space:nowrap}' +
-  '.f-obs{width:13%;text-align:left!important;vertical-align:top!important;font-size:8px;background:#fff!important}.f-receso{background:#bbb;font-weight:700;letter-spacing:2px}.f-tit{text-align:center;font-weight:700;background:#bbb;font-size:11px}' +
+  '.f-obs{width:13%;text-align:left!important;vertical-align:top!important;font-size:8px;background:#fff!important;font-weight:400!important}.f-receso{background:#bbb;font-weight:700;letter-spacing:2px}.f-tit{text-align:center;font-weight:700;background:#bbb;font-size:11px}' +
+  '.f-falta{background:#f2f2f2}.f-aus{color:#9a9a9a}.f-sig{font-size:10px;color:#000}.f-sin{letter-spacing:.5px}' +
+  '.f-ausentes{font-size:8.5px;margin-top:4px;line-height:1.35}.f-ley{color:#444}' +
   '.f-cab{display:flex;justify-content:space-between;font-weight:700;font-size:10px;margin:2px 0}.f-cab span{flex:1}.f-cab span:nth-child(2){text-align:center}.f-cab span:last-child{text-align:right}.hoja-firmas .firmas{margin-top:26px}</style>';
 async function imprimirFirmasDia() {
   const f = S.perFecha || S.ini.hoy;
@@ -922,15 +939,18 @@ async function imprimirFirmasSemana() {
 function formCobertura(ini, g) {
   const d = S.clasesDia, c = d.clases.find((x) => x.ini === ini && x.grupo === g);
   if (!c) return;
-  const libres = (d.libres || {})[ini] || [];
-  const ids = {}; libres.forEach((p) => { ids[p.id] = true; });
+  const libres = (d.libres || {})[ini] || [], apoyo = (d.apoyo || {})[ini] || [];
+  const ids = {}; libres.concat(apoyo).forEach((p) => { ids[p.id] = true; });
   const otros = S.per.personas.filter((p) => p.activo && !ids[p.id] && p.id !== c.idMaestro);
   modal('<h2>' + fG(g) + ' · ' + h12(ini) + '-' + h12(c.fin) + '</h2><div class="tenue">' + esc(c.asignatura) + ' · ' + fF(d.fecha) + '</div>' +
-    '<div class="aviso err" style="margin-top:10px">Falta ' + esc(c.maestro) + '</div>' +
+    '<div class="aviso err" style="margin-top:10px"><b>' + esc(c.sigla) + '</b> · ' + esc(c.maestro) + ': ' + esc((c.motivo || '').toLowerCase()) +
+      (c.ausDesde && c.ausDesde !== c.ausHasta ? ' del ' + fC(c.ausDesde) + ' al ' + fC(c.ausHasta) : '') + '</div>' +
     '<label>¿Quién cubre este grupo?</label><select id="cCub"><option value="">Selecciona…</option>' +
-    (libres.length ? '<optgroup label="Libres a esta hora (sugeridos)">' + libres.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === c.idCubre ? ' selected' : '') + '>' + esc(p.nombre) + '</option>').join('') + '</optgroup>' : '') +
+    (libres.length ? '<optgroup label="Docentes libres a esta hora (sugeridos)">' + libres.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === c.idCubre ? ' selected' : '') + '>' + esc(p.nombre) + '</option>').join('') + '</optgroup>' : '') +
+    (apoyo.length ? '<optgroup label="Prefectura y directivos">' + apoyo.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === c.idCubre ? ' selected' : '') + '>' + esc(p.nombre) + ' · ' + esc(p.puesto) + '</option>').join('') + '</optgroup>' : '') +
     '<optgroup label="Otro personal">' + otros.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === c.idCubre ? ' selected' : '') + '>' + esc(p.nombre) + (p.puesto && p.puesto !== 'Docente' ? ' · ' + esc(p.puesto) : '') + '</option>').join('') + '</optgroup></select>' +
-    '<div class="tenue" style="margin-top:6px">' + (libres.length ? libres.length + ' docente(s) no tienen clase a esta hora.' : 'Ningún docente está libre a esta hora; puedes elegir a otra persona del personal.') + '</div>' +
+    '<div class="tenue" style="margin-top:6px">' + (libres.length ? libres.length + ' docente(s) no tienen clase a esta hora.' : 'Ningún docente está libre a esta hora.') +
+      (apoyo.length ? '' : ' Para que aparezcan prefectos, subdirección o dirección, agrégalos en Personal con ese puesto.') + '</div>' +
     '<div class="acciones"><button onclick="cerrar()">Cancelar</button>' + (c.idCubre ? '<button class="peligro" onclick="guardarCobertura(\'' + ini + '\',\'' + esc(g) + '\',true)">Quitar</button>' : '') +
     '<button class="prim" onclick="guardarCobertura(\'' + ini + '\',\'' + esc(g) + '\')">Guardar</button></div>');
 }
@@ -1081,7 +1101,7 @@ function perPeriodo(d) {
   $('#qIni').value = S.perRep.ini; $('#qFin').value = S.perRep.fin;
   verRepPersonal();
 }
-const COLS_PER = ['FALTA', 'RETARDO', 'SALIDA', 'LICENCIA_MEDICA', 'PERMISO', 'COMISION', 'OTRO'];
+const COLS_PER = ['FALTA', 'RETARDO', 'SALIDA', 'LICENCIA_MEDICA', 'PERMISO_ECONOMICO', 'PERMISO', 'COMISION', 'OTRO'];
 function tablaPersonal(r, soloCon) {
   const filas = soloCon ? r.filas.filter((f) => f.conIncidencias) : r.filas;
   if (!filas.length) return '<div class="tenue">No hay incidencias en este periodo.</div>';
