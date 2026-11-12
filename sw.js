@@ -1,7 +1,7 @@
 /* Guarda la app en el celular para que abra sin internet. Cambia VERSION al publicar cambios. */
-const VERSION = 'asistencia-v2.0.0';
+const VERSION = 'asistencia-v2.1.0';
 const ARCHIVOS = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
-  './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
+  './icon-192.png', './icon-512.png', './apple-touch-icon.png', './logo.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(ARCHIVOS)).then(() => self.skipWaiting()));

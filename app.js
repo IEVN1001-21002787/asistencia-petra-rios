@@ -58,8 +58,44 @@ function cerrar() { $('#modal').classList.add('hidden'); $('#modalBody').innerHT
 function imprimir(html) { $('#print').innerHTML = html; setTimeout(() => window.print(), 300); }
 function encabezadoDoc() {
   const c = S.ini.config;
-  return '<div style="text-align:center"><b style="font-size:15px">' + esc(c.escuela) + '</b><br>' +
+  return '<div style="text-align:center"><img src="logo.png" alt="" style="width:110px;height:auto;display:block;margin:0 auto 6px"><b style="font-size:15px">' + esc(c.escuela) + '</b><br>' +
     (c.cct ? 'CCT ' + esc(c.cct) + ' · ' : '') + esc(c.municipio) + ' · Ciclo ' + esc(c.ciclo) + '</div>';
+}
+
+const ICONOS = {
+  hoy: 'M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+  lista: 'M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2',
+  salidas: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
+  alumnos: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
+  alertas: 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01',
+  reportes: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5',
+  reloj: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
+  mas: 'M12 5v14M5 12h14',
+};
+function svg(nombre, tam, color) {
+  return '<svg width="' + (tam || 20) + '" height="' + (tam || 20) + '" viewBox="0 0 24 24" fill="none" stroke="' + (color || 'currentColor') +
+    '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + ICONOS[nombre] + '"/></svg>';
+}
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const DIAS_L = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+function fechaLarga(f) {
+  const p = f.split('-').map(Number);
+  return DIAS_L[new Date(p[0], p[1] - 1, p[2]).getDay()] + ' ' + p[2] + ' de ' + MESES[p[1] - 1];
+}
+function cab(sobre, titulo, extra) {
+  $('#sobre').textContent = sobre || '';
+  $('#titulo').textContent = titulo || '';
+  $('#cabExtra').innerHTML = extra || '';
+}
+function iniciales(nombre) {
+  const p = String(nombre || '').trim().split(/\s+/);
+  return ((p[0] || '')[0] || '') + ((p[2] || p[1] || '')[0] || '');
+}
+function menuCuenta() {
+  const u = S.ini.usuario;
+  modal('<h2>' + esc(u.nombre) + '</h2><div class="tenue">' + esc(SES.email) + ' · ' + esc(u.rol.replace('_', ' ').toLowerCase()) + '</div>' +
+    '<div class="tenue" style="margin-top:6px">Ciclo ' + esc(S.ini.config.ciclo) + ' · ' + esc(S.ini.config.escuela) + '</div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cerrar</button><button class="peligro" onclick="cerrarSesion()">Cerrar sesión</button></div>');
 }
 
 /* ---------------- Cola sin internet ---------------- */
@@ -93,12 +129,14 @@ const VISTAS = [
 ];
 function pintarNav() {
   $('#nav').innerHTML = VISTAS.filter((v) => puede(v.p))
-    .map((v) => '<button id="nav-' + v.id + '" onclick="ir(\'' + v.id + '\')">' + v.t + '</button>').join('');
+    .map((v) => '<button id="nav-' + v.id + '" onclick="ir(\'' + v.id + '\')"><span class="ico">' + svg(v.id) + '</span>' + v.t + '</button>').join('');
 }
 function ir(v, arg) {
   S.vista = v;
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.id === 'nav-' + v));
   window.scrollTo(0, 0);
+  const t = { hoy: 'Hoy', lista: 'Pasar lista', salidas: 'Salidas', alumnos: 'Alumnos', alertas: 'Alertas', reportes: 'Reportes' };
+  cab(fechaLarga(S.ini.hoy), t[v]);
   ({ hoy: vHoy, lista: vLista, salidas: vSalidas, alumnos: vAlumnos, alertas: vAlertas, reportes: vReportes }[v])(arg);
 }
 
@@ -130,21 +168,30 @@ async function vHoy() {
   try {
     const d = await api('apiHoy', S.ini.hoy);
     const c = S.ini.config;
-    let h = '<h2>Hoy · ' + dia(d.fecha) + ' ' + fF(d.fecha) + '</h2>';
+    cab(fechaLarga(d.fecha), 'Hoy', '<div class="stats">' +
+      '<div class="stat"><b class="mal">' + d.faltas.length + '</b><span>Faltas</span></div>' +
+      '<div class="stat"><b class="amb">' + d.retardos.length + '</b><span>Retardos</span></div>' +
+      '<div class="stat"><b style="color:var(--azul)">' + d.salidas.length + '</b><span>Salidas</span></div></div>');
+    let h = '';
     if (!d.habil) h += '<div class="aviso">Hoy está marcado como día sin clase.</div>';
-    h += '<div class="tenue" style="margin-bottom:8px">Cierre de puerta ' + esc(c.horaCierre) + ' · retardo desde ' + esc(c.horaRetardo) + '</div>';
-    if (puede('lista') && d.habil) h += '<button class="prim ancho" onclick="formRetardo()">Registrar llegada tarde</button><div style="height:10px"></div>';
+    if (puede('lista') && d.habil) h += '<button class="oro ancho grande" onclick="formRetardo()">' + svg('reloj', 22) + 'Registrar llegada tarde</button>';
+    const conLista = d.grupos.filter((g) => g.pasada).length;
+    h += '<div class="seccion"><h3>Grupos</h3><span class="tenue" style="font-weight:600">' + conLista + ' de ' + d.grupos.length + ' con lista</span></div>';
     h += '<div class="grid">' + d.grupos.map((g) =>
-      '<div class="grupo" onclick="' + (puede('lista') ? 'ir(\'lista\',\'' + esc(g.grupo) + '\')' : '') + '">' +
-      '<div class="fila"><b class="crece">' + esc(g.grupo) + '</b>' + (g.pasada ? '<span class="ok">✓</span>' : '<span class="tenue">sin lista</span>') + '</div>' +
-      '<div class="tenue">' + g.total + ' alumnos</div>' +
-      '<div style="font-size:13px;margin-top:4px"><span class="mal">F ' + g.F + '</span> · <span class="amb">R ' + g.R + '</span> · S ' + g.S + (g.J ? ' · J ' + g.J : '') + '</div></div>').join('') + '</div>';
-    const lista = (titulo, arr, extra) => '<h3>' + titulo + ' (' + arr.length + ')</h3>' + (arr.length ? '<div class="card">' + arr.map((a) =>
-      '<div class="res" onclick="vFicha(\'' + esc(a.id) + '\')"><b>' + esc(a.nombre) + '</b> <span class="tenue">' + esc(a.grupo) + ' ' + extra(a) + '</span>' +
-      (a.comentario ? '<div class="tenue">' + esc(a.comentario) + '</div>' : '') + '</div>').join('') + '</div>' : '<div class="tenue">Ninguno</div>');
-    h += lista('Faltas', d.faltas, () => '');
-    h += lista('Retardos', d.retardos, (a) => '· llegó ' + esc(a.hora));
-    h += lista('Salidas', d.salidas, (a) => '· salió ' + esc(a.horaSalida));
+      '<div class="grupo' + (g.pasada ? '' : ' pendiente') + '" onclick="' + (puede('lista') ? 'ir(\'lista\',\'' + esc(g.grupo) + '\')' : '') + '">' +
+      '<div class="fila"><b class="crece">' + esc(g.grupo) + '</b><span class="marca">' + (g.pasada ? '✓' : '!') + '</span></div>' +
+      '<span class="det">' + (g.pasada ? 'F ' + g.F + ' · R ' + g.R + (g.S ? ' · S ' + g.S : '') : 'Sin lista') + '</span></div>').join('') + '</div>';
+    h += '<div class="tenue" style="margin-top:10px">Cierre de puerta ' + esc(c.horaCierre) + ' · retardo desde ' + esc(c.horaRetardo) + '</div>';
+    const movs = [].concat(
+      d.salidas.map((a) => ({ a: a, tipo: 'S', txt: 'Salió ' + a.horaSalida })),
+      d.retardos.map((a) => ({ a: a, tipo: 'R', txt: 'Llegó ' + a.hora + (a.comentario ? ' · ' + a.comentario : '') })),
+      d.faltas.map((a) => ({ a: a, tipo: 'F', txt: 'Falta' + (a.comentario ? ' · ' + a.comentario : '') })));
+    const ico = { S: 'salidas', R: 'reloj', F: 'alertas' };
+    h += '<div class="seccion"><h3>Movimientos de hoy</h3></div>';
+    h += movs.length ? '<div class="card" style="padding:2px 14px">' + movs.map((m) =>
+      '<div class="mov" onclick="vFicha(\'' + esc(m.a.id) + '\')"><span class="circ ' + m.tipo + '">' + svg(ico[m.tipo], 18) + '</span>' +
+      '<div class="t"><b>' + esc(m.a.nombre) + ' · ' + esc(m.a.grupo) + '</b><span>' + esc(m.txt) + '</span></div></div>').join('') + '</div>'
+      : '<div class="tenue">Todavía no hay faltas, retardos ni salidas hoy.</div>';
     $('#main').innerHTML = h;
   } catch (e) { errVista(e); }
 }
@@ -183,16 +230,16 @@ async function vLista(grupo) {
       toast('Sin internet: se muestra la lista guardada en el celular.');
     }
     S.lista = d;
-    let h = '<h2>Pasar lista</h2><div class="fila">' +
-      '<select class="crece" onchange="vLista(this.value)">' + opcionesGrupo(d.grupo) + '</select>' +
-      (puede('corregirPasado') ? '<input type="date" style="width:auto" value="' + d.fecha + '" max="' + S.ini.hoy + '" onchange="S.listaFecha=this.value;vLista()">' :
-        '<span class="tenue">' + dia(d.fecha) + ' ' + fF(d.fecha) + '</span>') + '</div>';
-    if (!d.habil) h += '<div class="aviso" style="margin-top:10px">Este día está marcado como día sin clase.</div>';
-    else if (d.pasada) h += '<div class="aviso info" style="margin-top:10px">La lista de este día ya está registrada. Puedes corregirla y volver a guardar.</div>';
-    if (d.fecha !== S.ini.hoy) h += '<div class="aviso" style="margin-top:10px">Estás corrigiendo un día anterior. El cambio queda registrado.</div>';
-    h += '<div class="card" style="margin-top:10px;padding:4px 8px">';
-    if (d.editable && d.habil) h += '<div class="fila" style="padding:6px 0"><span class="crece tenue">Todos aparecen presentes. Toca solo a quien falta o llegó tarde.</span><button class="chico" onclick="todosPresentes()">Todos ✓</button></div>';
-    h += d.alumnos.map((a, i) => filaAlumno(a, i, d.editable && d.habil)).join('') + '</div>';
+    cab('Pasar lista · ' + fechaLarga(d.fecha), 'Grupo ' + d.grupo, '<div class="chips">' + S.ini.grupos.map((g) =>
+      '<button class="chip-g' + (g === d.grupo ? ' on' : '') + '" onclick="vLista(\'' + esc(g) + '\')">' + esc(g) + '</button>').join('') + '</div>');
+    let h = '';
+    if (puede('corregirPasado')) h += '<div class="fila" style="margin-bottom:10px"><label class="crece" style="margin:0">Fecha de la lista</label>' +
+      '<input type="date" style="width:auto" value="' + d.fecha + '" max="' + S.ini.hoy + '" onchange="S.listaFecha=this.value;vLista()"></div>';
+    if (!d.habil) h += '<div class="aviso">Este día está marcado como día sin clase.</div>';
+    else if (d.pasada) h += '<div class="aviso info">La lista de este día ya está registrada. Puedes corregirla y volver a guardar.</div>';
+    if (d.fecha !== S.ini.hoy) h += '<div class="aviso">Estás corrigiendo un día anterior. El cambio queda registrado.</div>';
+    if (d.editable && d.habil) h += '<div class="fila" style="margin-bottom:10px"><span class="crece tenue">Todos inician presentes. Toca solo F o R.</span><button class="chico" onclick="todosPresentes()">Todos ✓</button></div>';
+    h += '<div class="lista-card">' + d.alumnos.map((a, i) => filaAlumno(a, i, d.editable && d.habil)).join('') + '</div>';
     if (!d.alumnos.length) h += '<div class="tenue">Este grupo no tiene alumnos activos.</div>';
     h += '<div style="height:70px"></div>';
     $('#main').innerHTML = h + '<div class="pie" id="pieLista"></div>';
@@ -202,14 +249,18 @@ async function vLista(grupo) {
 function filaAlumno(a, i, editable) {
   let ctl;
   if (a.estado === 'J') ctl = badge('J', 'Justificada');
-  else if (a.estado === 'S') ctl = badge('S', 'Salió ' + a.horaSalida);
-  else if (!editable) ctl = badge(a.estado, ESTADOS[a.estado] + (a.estado === 'R' && a.hora ? ' ' + a.hora : ''));
+  else if (a.estado === 'S') ctl = badge('S', 'Salió');
+  else if (!editable) ctl = badge(a.estado, ESTADOS[a.estado]);
   else ctl = '<div class="seg">' + ['P', 'F', 'R'].map((e) =>
-    '<button class="' + (a.estado === e ? 'on-' + e : '') + '" onclick="setEstado(' + i + ',\'' + e + '\')">' + (e === 'P' ? '✓' : e) + '</button>').join('') + '</div>';
-  return '<div class="alumno" id="al-' + i + '"><span class="num">' + (i + 1) + '</span><span class="nom">' + esc(a.nombre) +
-    (a.comentario ? '<br><span class="tenue">' + esc(a.comentario) + '</span>' : '') +
-    (a.estado === 'R' && a.hora ? '<br><span class="tenue amb">Llegó ' + esc(a.hora) + '</span>' : '') + '</span>' +
-    (editable && a.estado !== 'J' && a.estado !== 'S' ? '<button class="chico" title="Comentario" onclick="comentar(' + i + ')">✎</button>' : '') + ctl + '</div>';
+    '<button class="' + (a.estado === e ? 'on-' + e : '') + '" aria-label="' + ESTADOS[e] + '" onclick="setEstado(' + i + ',\'' + e + '\')">' + (e === 'P' ? '✓' : e) + '</button>').join('') + '</div>';
+  let nota = ESTADOS[a.estado];
+  if (a.estado === 'R') nota = 'Llegó ' + (a.hora || 'tarde') + ' · llamar a padres';
+  if (a.estado === 'S') nota = 'Salió ' + (a.horaSalida || '');
+  if (a.estado === 'J') nota = 'Falta justificada';
+  if (a.comentario) nota += ' · ' + a.comentario;
+  return '<div class="alumno" id="al-' + i + '"><span class="ini ' + a.estado + '">' + esc(iniciales(a.nombre).toUpperCase()) + '</span>' +
+    '<span class="nom"><b>' + esc(a.nombre) + '</b><span class="' + a.estado + '">' + esc(nota) + '</span></span>' +
+    (editable && a.estado !== 'J' && a.estado !== 'S' ? '<button class="nota" aria-label="Agregar comentario" onclick="comentar(' + i + ')">✎</button>' : '') + ctl + '</div>';
 }
 function setEstado(i, e) {
   S.lista.alumnos[i].estado = e;
@@ -230,9 +281,9 @@ function pintarPie() {
   const d = S.lista, t = { P: 0, F: 0, R: 0, J: 0, S: 0 };
   d.alumnos.forEach((a) => t[a.estado]++);
   const puedeGuardar = d.editable && d.habil && d.alumnos.length;
-  $('#pieLista').innerHTML = '<div class="fila"><span class="crece" style="font-size:14px"><span class="ok">✓ ' + t.P + '</span> · <span class="mal">F ' + t.F +
-    '</span> · <span class="amb">R ' + t.R + '</span>' + (t.J ? ' · J ' + t.J : '') + (t.S ? ' · S ' + t.S : '') + '</span>' +
-    (puedeGuardar ? '<button class="prim" id="gBtn" onclick="guardarLista()">Guardar lista</button>' : '') + '</div>';
+  $('#pieLista').innerHTML = '<div class="fila"><span class="crece cuenta"><span class="ok">✓ ' + t.P + '</span><span class="mal">F ' + t.F +
+    '</span><span class="amb">R ' + t.R + '</span>' + (t.J ? '<span style="color:var(--morado)">J ' + t.J + '</span>' : '') + (t.S ? '<span style="color:var(--azul)">S ' + t.S + '</span>' : '') + '</span>' +
+    (puedeGuardar ? '<button class="prim grande" id="gBtn" onclick="guardarLista()">Guardar lista</button>' : '') + '</div>';
 }
 async function guardarLista() {
   const d = S.lista;
@@ -264,14 +315,17 @@ async function vSalidas() {
   cargando();
   try {
     const arr = await api('apiSalidas', S.ini.hoy);
-    let h = '<h2>Salidas de hoy</h2>';
-    if (puede('salidas') && S.ini.habilHoy) h += '<button class="prim ancho" onclick="nuevaSalida()">Nueva salida</button><div style="height:10px"></div>';
+    cab(fechaLarga(S.ini.hoy), 'Salidas', '<div class="stats"><div class="stat"><b style="color:var(--azul)">' + arr.filter((x) => x.estatus === 'COMPLETADA').length +
+      '</b><span>Completadas</span></div><div class="stat"><b class="amb">' + arr.filter((x) => x.estatus !== 'COMPLETADA').length +
+      '</b><span>Por aprobar</span></div><div class="stat"><b>' + arr.length + '</b><span>Total</span></div></div>');
+    let h = '';
+    if (puede('salidas') && S.ini.habilHoy) h += '<button class="oro ancho grande" style="margin-bottom:14px" onclick="nuevaSalida()">' + svg('mas', 22) + 'Nueva salida</button>';
     h += arr.length ? arr.map(tarjetaSalida).join('') : '<div class="tenue">No hay salidas registradas hoy.</div>';
     $('#main').innerHTML = h;
   } catch (e) { errVista(e); }
 }
 function tarjetaSalida(s) {
-  return '<div class="card"><div class="fila"><b class="crece">' + esc(s.hora) + ' · ' + esc(s.nombre) + '</b>' +
+  return '<div class="card"><div class="fila"><span class="ini" style="background:var(--azul-suave);color:var(--azul)">' + esc(s.hora) + '</span><b class="crece">' + esc(s.nombre) + '</b>' +
     badge(s.estatus, s.estatus === 'COMPLETADA' ? 'Completada' : 'Pendiente de aprobación') + '</div>' +
     '<div class="tenue">' + esc(s.grupo) + ' · ' + (s.fecha !== S.ini.hoy ? fF(s.fecha) + ' · ' : '') + 'Recoge: ' + esc(s.recoge) + (s.parentesco ? ' (' + esc(s.parentesco) + ')' : '') +
     (s.autorizado === 'NO' ? ' · <span class="mal">no estaba autorizado</span>' : '') + '</div>' +
@@ -293,22 +347,28 @@ async function pasoSalida(id, nombre, grupo) {
     const cs = f.contactos.slice().sort((a, b) => (b.autorizado === 'SI') - (a.autorizado === 'SI'));
     const aviso = puede('aprobarSalida') ? 'Esta persona no está autorizada. Al guardar, la salida queda aprobada por ti.'
       : 'Esta persona no está autorizada. La salida quedará pendiente hasta que el director o la subdirectora la aprueben.';
-    $('#paso').innerHTML = '<div class="card"><b>' + esc(f.alumno.nombre) + '</b> <span class="tenue">' + esc(f.alumno.grupo) + '</span></div>' +
-      '<label>¿Quién recoge?</label>' +
+    $('#paso').innerHTML = '<div class="fila" style="background:var(--fondo);border-radius:14px;padding:10px 12px"><span class="ini">' + esc(iniciales(f.alumno.nombre).toUpperCase()) + '</span>' +
+      '<span class="crece"><b>' + esc(f.alumno.nombre) + '</b><br><span class="tenue">Grupo ' + esc(f.alumno.grupo) + '</span></span></div>' +
+      '<span class="etiq">¿Quién recoge?</span>' +
       cs.map((c) => '<label class="opcion"><input type="radio" name="rec" value="' + esc(c.id) + '" data-aut="' + esc(c.autorizado) + '" onchange="cambioRecoge()">' +
-        '<span><b>' + esc(c.nombre) + '</b><br><span class="tenue">' + esc(c.parentesco) + ' · ' + esc(c.telefono) + '</span> ' +
-        (c.autorizado === 'SI' ? badge('SI', 'Autorizado') : badge('F', 'No autorizado')) + '</span></label>').join('') +
-      '<label class="opcion"><input type="radio" name="rec" value="" data-aut="NO" onchange="cambioRecoge()"><span><b>Otra persona</b></span></label>' +
+        '<span class="crece"><b>' + esc(c.nombre) + '</b><span class="tenue">' + esc(c.parentesco) + (c.autorizado === 'SI' ? '' : ' · requiere aprobación de dirección') + '</span></span>' +
+        (c.autorizado === 'SI' ? badge('SI', 'Autorizado') : badge('F', 'No autorizado')) + '</label>').join('') +
+      '<label class="opcion"><input type="radio" name="rec" value="" data-aut="NO" onchange="cambioRecoge()"><span class="crece"><b>Otra persona</b></span></label>' +
       '<div id="otra" class="hidden"><label>Nombre completo</label><input id="sNom"><label>Parentesco</label><input id="sPar" placeholder="Ej. tío, abuela, vecino"></div>' +
       '<div id="sAviso" class="aviso hidden">' + esc(aviso) + '</div>' +
-      '<label>Motivo</label><select id="sMot"><option value="">Selecciona…</option>' + MOTIVOS_SALIDA.map((m) => '<option>' + m + '</option>').join('') + '</select>' +
+      '<span class="etiq">Motivo</span><input type="hidden" id="sMot" value=""><div class="pastillas">' + MOTIVOS_SALIDA.map((m) =>
+        '<button type="button" class="pastilla" onclick="elegirMotivo(this,\'' + m + '\')">' + m + '</button>').join('') + '</div>' +
       '<label>Detalle (opcional)</label><input id="sDet">' +
       '<label>Hora de salida</label><input id="sHora" type="time" value="' + horaAhora() + '">' +
-      '<label>Firma de quien recoge</label><canvas class="firma" id="sFirma"></canvas>' +
-      '<div class="acciones"><button class="chico" onclick="FIRMA.limpiar()">Borrar firma</button></div>' +
-      '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="sBtn" onclick="guardarSalida(\'' + esc(id) + '\')">Guardar salida</button></div>';
+      '<div class="fila"><span class="etiq crece">Firma de quien recoge</span><button class="chico" style="border:0" onclick="FIRMA.limpiar()">Borrar</button></div>' +
+      '<canvas class="firma" id="sFirma"></canvas>' +
+      '<div class="acciones" style="margin-top:16px"><button onclick="cerrar()">Cancelar</button><button class="prim grande" style="flex:1" id="sBtn" onclick="guardarSalida(\'' + esc(id) + '\')">Guardar salida</button></div>';
     FIRMA = iniciarFirma($('#sFirma'));
   } catch (e) { error(e); cerrar(); }
+}
+function elegirMotivo(btn, m) {
+  document.querySelectorAll('.pastilla').forEach((b) => b.classList.toggle('on', b === btn));
+  $('#sMot').value = m;
 }
 function cambioRecoge() {
   const r = document.querySelector('input[name=rec]:checked');
@@ -384,7 +444,7 @@ async function imprimirComprobante(id) {
 /* ---------------- Vista: Alumnos ---------------- */
 function vAlumnos() {
   const b = S.busq;
-  $('#main').innerHTML = '<h2>Alumnos</h2>' +
+  $('#main').innerHTML = '' +
     (puede('alumnos') ? '<button class="prim ancho" onclick="formAlumno()">Nuevo alumno</button><div style="height:10px"></div>' : '') +
     '<input id="aQ" placeholder="Buscar por nombre, apellido o CURP" value="' + esc(b.q) + '" oninput="S.busq.q=this.value;buscarAlumnos()">' +
     '<div class="fila" style="margin-top:8px"><select class="crece" onchange="S.busq.grupo=this.value;buscarAlumnos()">' + opcionesGrupo(b.grupo, 'Todos los grupos') + '</select>' +
@@ -413,7 +473,8 @@ async function vFicha(id) {
     S.ficha = f;
     const a = f.alumno, act = a.estatus === 'ACTIVO';
     const pre = JSON.stringify({ id: a.id, nombre: a.nombre, grupo: a.grupo }).replace(/"/g, '&quot;');
-    let h = '<button class="chico" onclick="vAlumnos()">← Alumnos</button>' +
+    cab('Ficha del alumno', a.grupo + ' · ' + a.id);
+    let h = '<button class="chico" onclick="cab(fechaLarga(S.ini.hoy),\'Alumnos\');vAlumnos()">← Alumnos</button>' +
       '<h2 style="margin-top:12px">' + esc(a.nombre) + '</h2>' +
       '<div class="fila"><span class="crece tenue">' + esc(a.grupo) + ' · ' + esc(a.id) + (a.curp ? ' · ' + esc(a.curp) : '') + '</span>' + badge(a.estatus) + '</div>' +
       (a.notas ? '<div class="tenue">' + esc(a.notas) + '</div>' : '') + '<div class="acciones">' +
@@ -591,25 +652,43 @@ async function vAlertas() {
     const u = r.umbrales;
     const rojos = r.alertas.filter((a) => a.nivel === 'ROJO'), amar = r.alertas.filter((a) => a.nivel === 'AMARILLO'),
       ret = r.alertas.filter((a) => a.patron);
-    let h = '<h2>Alertas</h2><div class="tenue">Últimos ' + r.ventana.length + ' días hábiles: ' + fF(r.ventana[0]) + ' al ' + fF(r.ventana[r.ventana.length - 1]) +
-      '. Solo cuentan faltas sin justificar.</div>';
-    const tarjeta = (a, tipo) => '<div class="card"><div class="fila"><b class="crece">' + esc(a.nombre) + '</b><span class="tenue">' + esc(a.grupo) + '</span></div>' +
-      '<div style="font-size:14px;margin-top:4px">' + (tipo === 'R' ? '<span class="amb">' + a.retardos + ' retardos: ' + a.fechasR.map(fC).join(', ') + '</span>'
-        : '<span class="mal">' + a.faltas + ' faltas: ' + a.fechasF.map(fC).join(', ') + '</span>') + '</div>' +
-      (a.ultimoSeguimiento ? '<div class="tenue">Último seguimiento: ' + esc(a.ultimoSeguimiento.tipo) + ' ' + fF(a.ultimoSeguimiento.fecha) + ' (' + esc(a.ultimoSeguimiento.resultado) + ')</div>'
-        : '<div class="tenue mal">Sin seguimiento registrado</div>') +
-      '<div class="acciones"><button class="chico" onclick="vFicha(\'' + esc(a.id) + '\')">Ver ficha</button>' +
-      (puede('seguimiento') ? '<button class="chico prim" onclick="segDesdeAlerta(\'' + esc(a.id) + '\',\'\',\'' + (tipo === 'R' ? 'RETARDO' : 'FALTAS') + '\')">Registrar seguimiento</button>' : '') + '</div></div>';
-    h += '<h3 class="mal">Alerta roja: ' + u.rojo + ' o más faltas (' + rojos.length + ')</h3>' + (rojos.map((a) => tarjeta(a)).join('') || '<div class="tenue">Ninguno</div>');
-    h += '<h3 class="amb">En riesgo: ' + u.amarillo + ' a ' + (u.rojo - 1) + ' faltas (' + amar.length + ')</h3>' + (amar.map((a) => tarjeta(a)).join('') || '<div class="tenue">Ninguno</div>');
-    h += '<h3>Patrón de retardos: ' + u.retardos + ' o más (' + ret.length + ')</h3>' + (ret.map((a) => tarjeta(a, 'R')).join('') || '<div class="tenue">Ninguno</div>');
-    h += '<h3>Llamadas pendientes por retardo (' + r.pendientes.length + ')</h3>' + (r.pendientes.map((p) =>
+    cab('Últimos ' + r.ventana.length + ' días hábiles', 'Alertas', '<div class="contadores">' +
+      '<button class="contador rojo" onclick="irA(\'a-rojo\')"><b>' + rojos.length + '</b><span>Rojo</span></button>' +
+      '<button class="contador" onclick="irA(\'a-riesgo\')"><b>' + amar.length + '</b><span>En riesgo</span></button>' +
+      '<button class="contador" onclick="irA(\'a-ret\')"><b>' + ret.length + '</b><span>Retardos</span></button>' +
+      '<button class="contador" onclick="irA(\'a-llam\')"><b>' + r.pendientes.length + '</b><span>Llamadas</span></button></div>');
+    let h = '<div class="tenue">Del ' + fF(r.ventana[0]) + ' al ' + fF(r.ventana[r.ventana.length - 1]) + '. Solo cuentan faltas sin justificar.</div>';
+    const tira = (a) => '<div class="tira">' + r.ventana.map((f) => {
+      const e = a.fechasF.indexOf(f) >= 0 ? 'F' : a.fechasR.indexOf(f) >= 0 ? 'R' : '';
+      return '<span class="' + e + '" title="' + fF(f) + '">' + e + '</span>';
+    }).join('') + '</div>';
+    const tarjeta = (a, tipo) => {
+      const nivel = tipo === 'R' ? 'R' : (a.nivel === 'ROJO' ? 'ROJO' : 'AMARILLO');
+      const etiqueta = tipo === 'R' ? 'Retardos' : (a.nivel === 'ROJO' ? 'Rojo' : 'En riesgo');
+      return '<div class="card"><div class="fila"><span class="ini ' + (nivel === 'ROJO' ? 'F' : 'R') + '">' + esc(iniciales(a.nombre).toUpperCase()) + '</span>' +
+        '<span class="crece"><b>' + esc(a.nombre) + '</b><br><span class="tenue">Grupo ' + esc(a.grupo) + ' · ' +
+        (a.ultimoSeguimiento ? esc(a.ultimoSeguimiento.tipo.toLowerCase()) + ' el ' + fC(a.ultimoSeguimiento.fecha) : '<span class="mal">sin seguimiento</span>') + '</span></span>' +
+        badge(nivel, etiqueta) + '</div>' +
+        '<div style="font-size:13px;font-weight:600;margin-top:10px" class="' + (nivel === 'ROJO' ? 'mal' : 'amb') + '">' +
+        (tipo === 'R' ? a.retardos + ' retardos' : a.faltas + ' faltas sin justificar') + '</div>' + tira(a) +
+        '<div class="acciones3"><button class="prim" onclick="vFicha(\'' + esc(a.id) + '\')">Ficha</button>' +
+        (puede('seguimiento') ? '<button onclick="segDesdeAlerta(\'' + esc(a.id) + '\',\'\',\'' + (tipo === 'R' ? 'RETARDO' : 'FALTAS') + '\')">Seguimiento</button>' +
+          '<button onclick="citatorioDesdeAlerta(\'' + esc(a.id) + '\')">Citatorio</button>' : '') + '</div></div>';
+    };
+    h += '<h3 id="a-rojo" class="mal">Alerta roja: ' + u.rojo + ' o más faltas (' + rojos.length + ')</h3>' + (rojos.map((a) => tarjeta(a)).join('') || '<div class="tenue">Ninguno</div>');
+    h += '<h3 id="a-riesgo" class="amb">En riesgo: ' + u.amarillo + ' a ' + (u.rojo - 1) + ' faltas (' + amar.length + ')</h3>' + (amar.map((a) => tarjeta(a)).join('') || '<div class="tenue">Ninguno</div>');
+    h += '<h3 id="a-ret">Patrón de retardos: ' + u.retardos + ' o más (' + ret.length + ')</h3>' + (ret.map((a) => tarjeta(a, 'R')).join('') || '<div class="tenue">Ninguno</div>');
+    h += '<h3 id="a-llam">Llamadas pendientes por retardo (' + r.pendientes.length + ')</h3>' + (r.pendientes.map((p) =>
       '<div class="card"><div class="fila"><b class="crece">' + esc(p.nombre) + '</b><span class="tenue">' + esc(p.grupo) + '</span></div><div class="tenue">' + esc(p.detalle) + '</div>' +
       '<div class="acciones"><button class="chico" onclick="vFicha(\'' + esc(p.id) + '\')">Ver ficha</button>' +
       (puede('seguimiento') ? '<button class="chico prim" onclick="segDesdeAlerta(\'' + esc(p.id) + '\',\'' + esc(p.idSeg) + '\',\'RETARDO\')">Registrar llamada</button>' : '') +
       '</div></div>').join('') || '<div class="tenue">Ninguna</div>');
     $('#main').innerHTML = h;
   } catch (e) { errVista(e); }
+}
+function irA(id) { const el = document.getElementById(id); if (el) window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 200, behavior: 'smooth' }); }
+async function citatorioDesdeAlerta(id) {
+  try { S.ficha = await api('apiAlumno', id); formCitatorio(); } catch (e) { error(e); }
 }
 async function segDesdeAlerta(id, resuelve, motivo) {
   try { S.ficha = await api('apiAlumno', id); formSeguimiento(resuelve, motivo); } catch (e) { error(e); }
@@ -619,7 +698,7 @@ async function segDesdeAlerta(id, resuelve, motivo) {
 function vReportes() {
   const q = S.rep || { grupo: S.ini.grupos[0], ini: quincena(S.ini.hoy)[0], fin: quincena(S.ini.hoy)[1] };
   S.rep = q;
-  $('#main').innerHTML = '<h2>Reportes</h2><div class="card"><label>Grupo</label><select id="pGru" onchange="S.rep.grupo=this.value">' + opcionesGrupo(q.grupo) + '</select>' +
+  $('#main').innerHTML = '<div class="card"><label>Grupo</label><select id="pGru" onchange="S.rep.grupo=this.value">' + opcionesGrupo(q.grupo) + '</select>' +
     '<div class="fila"><div class="crece"><label>Desde</label><input id="pIni" type="date" value="' + q.ini + '" onchange="S.rep.ini=this.value"></div>' +
     '<div class="crece"><label>Hasta</label><input id="pFin" type="date" value="' + q.fin + '" onchange="S.rep.fin=this.value"></div></div>' +
     '<div class="acciones"><button class="chico" onclick="setQuincena(0)">Quincena actual</button><button class="chico" onclick="setQuincena(-1)">Quincena anterior</button></div>' +
@@ -778,8 +857,7 @@ async function arrancar() {
   }
   S.ini = r;
   ocultarLogin();
-  $('#escuela').textContent = r.config.escuela;
-  $('#quien').textContent = r.usuario.nombre + ' · ' + r.usuario.rol.replace('_', ' ').toLowerCase();
+  $('#salir').textContent = iniciales(r.usuario.nombre).toUpperCase() || '?';
   $('#salir').classList.remove('hidden');
   pintarNav(); ir('hoy'); vaciarCola(); precargarListas();
 }
@@ -795,7 +873,6 @@ async function inicio() {
     const c = await configPublica();
     SES.clientId = c.clientId;
     try { localStorage.setItem('clientId', c.clientId); } catch (e) {}
-    if (c.escuela) $('#loginEscuela').textContent = c.escuela;
   } catch (e) { /* sin internet */ }
   banner();
   if (sesionVigente()) arrancar();
