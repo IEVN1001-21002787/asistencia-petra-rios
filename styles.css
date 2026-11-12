@@ -200,3 +200,23 @@ table.tabla td.izq, table.tabla th.izq { text-align: left; }
   .firmas { display: flex; justify-content: space-around; margin-top: 50px; text-align: center; }
   .firmas div { border-top: 1px solid #000; width: 200px; padding-top: 4px; }
 }
+
+/* Pestañas internas */
+.pestanas { display: flex; gap: 4px; background: #fff; border-radius: 14px; padding: 4px; margin-bottom: 14px; }
+.pestanas button { flex: 1; border: 0; min-height: 40px; border-radius: 10px; font-weight: 600; font-size: 14px; color: var(--tenue); background: none; padding: 0 4px; }
+.pestanas button.on { background: var(--marino); color: #fff; }
+/* Horario */
+table.horario { font-size: 11px; }
+table.horario td { min-width: 92px; line-height: 1.25; cursor: pointer; vertical-align: top; }
+table.horario td b { font-size: 10px; letter-spacing: .2px; }
+table.horario td i { font-size: 10px; }
+table.horario .fija { position: sticky; left: 0; background: #F7F8FC; min-width: 54px; z-index: 1; }
+table.horario tr.receso td { background: var(--fondo); color: var(--tenue); font-weight: 700; letter-spacing: 2px; cursor: default; }
+.k-sin { background: var(--rojo-suave) !important; color: var(--rojo); }
+.k-sup { background: var(--azul-suave) !important; color: var(--azul); }
+.k-ret { background: var(--ambar-suave) !important; color: var(--ambar); }
+.k-sal { background: var(--morado-suave) !important; color: var(--morado); }
+.k-libre { color: #A0A6BC; }
+.leyenda { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
+.leyenda span { padding: 4px 8px; border-radius: 8px; background: #fff; }
+button.peligro { color: var(--rojo); border-color: var(--rojo); }

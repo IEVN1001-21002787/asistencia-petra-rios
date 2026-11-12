@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.3';
+const VERSION = '2.4';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -27,6 +27,8 @@ const HOJAS = {
   Personal: ['ID_Personal', 'Nombre', 'Puesto', 'Asignatura', 'Activo', 'Notas'],
   Incidencias_Personal: ['ID_Inc', 'Fecha_Inicio', 'Fecha_Fin', 'ID_Personal', 'Tipo', 'Hora', 'Horas_Clase', 'Grupos',
     'Cubrio', 'Documento', 'Comentario', 'Estatus', 'Registro', 'Fecha_Registro', 'Actualizado'],
+  Horario: ['Dia', 'Hora_Inicio', 'Hora_Fin', 'Grupo', 'Asignatura', 'ID_Personal'],
+  Suplencias: ['ID_Sup', 'ID_Titular', 'ID_Suplente', 'Fecha_Inicio', 'Fecha_Fin', 'Motivo', 'Comentario', 'Estatus', 'Registro', 'Fecha_Registro'],
 };
 
 const IMPORTAR_ENCABEZADOS = ['Apellido_Paterno', 'Apellido_Materno', 'Nombres', 'CURP', 'Grupo',
@@ -51,21 +53,30 @@ const CONFIG_DEF = [
   ['INICIO_CICLO', '', 'Primer día de clases del ciclo (aaaa-mm-dd)'],
   ['FIN_CICLO', '', 'Último día de clases del ciclo (aaaa-mm-dd)'],
   ['DIAS_SIN_CONEXION', '14', 'Días que se aceptan registros capturados sin internet'],
+  ['TURNO', 'VESPERTINO', 'Turno que aparece en el registro de firmas'],
+  ['HORARIO_MODULOS', '13:40-14:30,14:30-15:20,15:20-16:10,16:40-17:30,17:30-18:20,18:20-19:10,19:10-20:00', 'Módulos de clase (inicio-fin, separados por coma)'],
+  ['VOBO_1', '', 'Nombre para el primer Vo.Bo. del registro de firmas'],
+  ['VOBO_2', '', 'Nombre para el segundo Vo.Bo. del registro de firmas'],
 ];
 
 const ROLES = ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO', 'TRABAJO_SOCIAL', 'SECRETARIA'];
 
+/** Acceso completo: dirección, subdirección y secretaría (y administración del sistema). */
+const COMPLETO = ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'];
+const CON_PREFECTOS = COMPLETO.concat(['PREFECTO']);
+
 const PERMISOS = {
   ver: ROLES,
-  lista: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO'],
-  corregirPasado: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR'],
-  salidas: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO'],
-  aprobarSalida: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR'],
-  justificar: ['ADMIN', 'TRABAJO_SOCIAL'],
-  seguimiento: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO', 'TRABAJO_SOCIAL'],
-  alumnos: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'],
-  calendario: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'],
-  personal: ['ADMIN', 'SUBDIRECTOR', 'PREFECTO'],
+  lista: CON_PREFECTOS,
+  corregirPasado: COMPLETO,
+  salidas: CON_PREFECTOS,
+  aprobarSalida: COMPLETO,
+  justificar: COMPLETO.concat(['TRABAJO_SOCIAL']),
+  seguimiento: ROLES,
+  alumnos: CON_PREFECTOS,
+  calendario: COMPLETO,
+  personal: CON_PREFECTOS, // maestros, horario, suplencias: todos menos trabajo social
+  usuarios: COMPLETO,      // dar o quitar acceso a la plataforma
 };
 
 /** Incidencias del personal. "rango" = puede durar varios días; "hora" = pide la hora. */
@@ -105,6 +116,9 @@ const ACCIONES = {
   apiPersonal: apiPersonal, apiGuardarPersona: apiGuardarPersona, apiRegistrarIncidencia: apiRegistrarIncidencia,
   apiCancelarIncidencia: apiCancelarIncidencia, apiReportePersonal: apiReportePersonal,
   apiHistorialPersona: apiHistorialPersona, apiExportarPersonal: apiExportarPersonal,
+  apiUsuarios: apiUsuarios, apiGuardarUsuario: apiGuardarUsuario,
+  apiHorario: apiHorario, apiGuardarClase: apiGuardarClase, apiClasesDia: apiClasesDia,
+  apiRegistrarSuplencia: apiRegistrarSuplencia, apiTerminarSuplencia: apiTerminarSuplencia, apiBajaPersona: apiBajaPersona,
 };
 
 let _correoActual = null;
@@ -1168,7 +1182,7 @@ function apiPersonal() {
     .map(function (r) { return incidencia_(r, mp); });
   const tipos = {};
   Object.keys(TIPOS_INCIDENCIA).forEach(function (k) { tipos[k] = TIPOS_INCIDENCIA[k]; });
-  return { personas: personas, hoy: deHoy, tipos: tipos, puestos: PUESTOS };
+  return { personas: personas, hoy: deHoy, tipos: tipos, puestos: PUESTOS, suplencias: suplenciasVigentes_(hoy, mp) };
 }
 
 /** d: {id?, nombre, puesto, asignatura, activo, notas} */
@@ -1337,6 +1351,236 @@ function apiExportarPersonal(ini, fin) {
     }));
   return { nombre: 'Incidencias_personal_' + r.inicio + '_a_' + r.fin + '.csv',
     csv: lineas.map(function (l) { return l.map(celda).join(','); }).join('\r\n') };
+}
+
+/* ------------------------------------------------------------------ */
+/* API: usuarios y accesos                                             */
+/* ------------------------------------------------------------------ */
+
+function usuarioPublico_(x) {
+  return { correo: x.Correo.toLowerCase(), nombre: x.Nombre, rol: String(x.Rol).toUpperCase(), activo: String(x.Activo).toUpperCase() !== 'NO' };
+}
+
+function apiUsuarios() {
+  const u = requiere_('usuarios');
+  return {
+    yo: u.email,
+    roles: ROLES.filter(function (r) { return r !== 'ADMIN' || u.rol === 'ADMIN'; }),
+    usuarios: tabla_('Usuarios').filter(function (x) { return x.Correo; }).map(usuarioPublico_)
+      .sort(function (a, b) { return (b.activo - a.activo) || a.nombre.localeCompare(b.nombre, 'es'); }),
+  };
+}
+
+/** d: {correo, nombre, rol, activo}. Alta, cambio de rol o quitar acceso (activo=false). Surte efecto de inmediato. */
+function apiGuardarUsuario(d) {
+  const u = requiere_('usuarios');
+  const correo = String(d.correo || '').trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo)) throw new Error('Escribe un correo válido.');
+  const rol = String(d.rol || '').toUpperCase();
+  if (ROLES.indexOf(rol) < 0) throw new Error('Selecciona el rol.');
+  const activo = d.activo !== false;
+  const nombre = String(d.nombre || '').trim().slice(0, 80);
+  if (!nombre) throw new Error('Escribe el nombre.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const todos = tabla_('Usuarios');
+    const x = todos.find(function (y) { return y.Correo.toLowerCase() === correo; });
+    const rolAntes = x ? String(x.Rol).toUpperCase() : '';
+    if ((rol === 'ADMIN' || rolAntes === 'ADMIN') && u.rol !== 'ADMIN') throw new Error('Solo administración puede asignar o cambiar ese rol.');
+    if (correo === u.email && (!activo || rol !== u.rol)) throw new Error('No puedes quitarte el acceso ni cambiar tu propio rol. Pídeselo a otra persona con acceso completo.');
+    if (x) {
+      actualizar_('Usuarios', x._fila, { Nombre: nombre, Rol: rol, Activo: activo ? 'SI' : 'NO' });
+      log_(u, 'USUARIO', correo + ' ' + rol + (activo ? '' : ' (sin acceso)'));
+    } else {
+      agregar_('Usuarios', [{ Correo: correo, Nombre: nombre, Rol: rol, Activo: activo ? 'SI' : 'NO' }]);
+      log_(u, 'USUARIO', 'Alta ' + correo + ' ' + rol);
+    }
+    // Cada solicitud vuelve a revisar la pestaña Usuarios, así que el cambio aplica en la siguiente acción.
+    return { ok: true, nuevo: !x };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* API: horario de clases y suplencias                                 */
+/* ------------------------------------------------------------------ */
+
+const DIAS_SEMANA = ['', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES'];
+
+function modulos_() {
+  return String(config_().HORARIO_MODULOS || '').split(',').map(function (m) {
+    const p = m.trim().split('-');
+    return { ini: (p[0] || '').trim(), fin: (p[1] || '').trim() };
+  }).filter(function (m) { return /^\d{1,2}:\d{2}$/.test(m.ini) && /^\d{1,2}:\d{2}$/.test(m.fin); });
+}
+
+function personaCorta_(p) {
+  return p ? { id: p.ID_Personal, nombre: p.Nombre, activo: String(p.Activo).toUpperCase() !== 'NO' } : null;
+}
+
+/** Suplencias que cubren la fecha f. Fecha_Fin vacía = hasta nuevo aviso. */
+function suplenciasVigentes_(f, mp) {
+  mp = mp || mapaPersonal_();
+  return tabla_('Suplencias').filter(function (r) {
+    return r.Estatus !== 'CANCELADA' && r.Fecha_Inicio <= f && (!r.Fecha_Fin || r.Fecha_Fin >= f);
+  }).map(function (r) {
+    return { id: r.ID_Sup, idTitular: r.ID_Titular, titular: mp[r.ID_Titular] ? mp[r.ID_Titular].Nombre : r.ID_Titular,
+      idSuplente: r.ID_Suplente, suplente: mp[r.ID_Suplente] ? mp[r.ID_Suplente].Nombre : r.ID_Suplente,
+      inicio: r.Fecha_Inicio, fin: r.Fecha_Fin, motivo: r.Motivo, comentario: r.Comentario };
+  });
+}
+
+function apiHorario() {
+  requiere_('personal');
+  const c = config_();
+  return {
+    modulos: modulos_(), grupos: grupos_(), dias: DIAS_SEMANA,
+    clases: tabla_('Horario').map(function (r) {
+      return { dia: parseInt(r.Dia, 10), ini: r.Hora_Inicio, fin: r.Hora_Fin, grupo: r.Grupo, asignatura: r.Asignatura, idPersona: r.ID_Personal };
+    }),
+    personas: tabla_('Personal').map(personaCorta_).sort(function (a, b) { return a.nombre.localeCompare(b.nombre, 'es'); }),
+    turno: c.TURNO, vobo: [c.VOBO_1 || '', c.VOBO_2 || ''],
+  };
+}
+
+/** d: {dia, ini, grupo, asignatura, idPersona}. Sin asignatura ni persona, el módulo queda libre. */
+function apiGuardarClase(d) {
+  const u = requiere_('personal');
+  const dia = parseInt(d.dia, 10);
+  if (!(dia >= 1 && dia <= 5)) throw new Error('Día no válido.');
+  const m = modulos_().find(function (x) { return x.ini === d.ini; });
+  if (!m) throw new Error('Módulo no válido.');
+  if (grupos_().indexOf(d.grupo) < 0) throw new Error('Grupo no válido.');
+  const asig = String(d.asignatura || '').trim().toUpperCase().slice(0, 40);
+  const idp = String(d.idPersona || '');
+  if (idp && !mapaPersonal_()[idp]) throw new Error('No se encontró al maestro.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const x = tabla_('Horario').find(function (r) { return parseInt(r.Dia, 10) === dia && r.Hora_Inicio === m.ini && r.Grupo === d.grupo; });
+    if (!asig && !idp) {
+      if (x) sh_('Horario').deleteRow(x._fila);
+    } else if (x) {
+      actualizar_('Horario', x._fila, { Asignatura: asig, ID_Personal: idp, Hora_Fin: m.fin });
+    } else {
+      agregar_('Horario', [{ Dia: String(dia), Hora_Inicio: m.ini, Hora_Fin: m.fin, Grupo: d.grupo, Asignatura: asig, ID_Personal: idp }]);
+    }
+    _cache = {};
+    log_(u, 'HORARIO', DIAS_SEMANA[dia] + ' ' + m.ini + ' ' + d.grupo + ': ' + (asig || 'libre') + ' ' + idp);
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Las clases de un día con quién las da (titular o suplente) y si hay alguna incidencia. */
+function apiClasesDia(fecha) {
+  requiere_('personal');
+  fecha = validarFecha_(fecha || hoy_());
+  const dia = parseF_(fecha).getDay();
+  const mp = mapaPersonal_();
+  const sup = {};
+  suplenciasVigentes_(fecha, mp).forEach(function (s) { sup[s.idTitular] = s; });
+  const inc = {};
+  incidenciasVigentes_().forEach(function (r) {
+    if (r.Fecha_Inicio <= fecha && (r.Fecha_Fin || r.Fecha_Inicio) >= fecha) (inc[r.ID_Personal] = inc[r.ID_Personal] || []).push(incidencia_(r, mp));
+  });
+  const ausente = function (lista) { return (lista || []).some(function (i) { return i.tipo !== 'RETARDO' && i.tipo !== 'SALIDA'; }); };
+  const clases = tabla_('Horario').filter(function (r) { return parseInt(r.Dia, 10) === dia; }).map(function (r) {
+    const titular = mp[r.ID_Personal];
+    const s = sup[r.ID_Personal];
+    const quien = s ? s.idSuplente : r.ID_Personal;
+    const incs = inc[quien] || [];
+    let estado = 'OK';
+    if (ausente(incs)) estado = 'SIN_MAESTRO';
+    else if (incs.some(function (i) { return i.tipo === 'RETARDO'; })) estado = 'RETARDO';
+    else if (incs.some(function (i) { return i.tipo === 'SALIDA'; })) estado = 'SALIDA';
+    else if (s) estado = 'SUPLENTE';
+    if (!r.ID_Personal) estado = 'SIN_ASIGNAR';
+    return { ini: r.Hora_Inicio, fin: r.Hora_Fin, grupo: r.Grupo, asignatura: r.Asignatura,
+      idTitular: r.ID_Personal, titular: titular ? titular.Nombre : '', idMaestro: quien, maestro: mp[quien] ? mp[quien].Nombre : '',
+      suplente: !!s, estado: estado, incidencias: incs.map(function (i) { return i.tipoTexto + (i.hora ? ' ' + i.hora : ''); }) };
+  });
+  const c = config_();
+  return { fecha: fecha, dia: dia, diaNombre: DIAS_SEMANA[dia] || '', habil: esHabil_(fecha), modulos: modulos_(), grupos: grupos_(),
+    clases: clases, turno: c.TURNO, vobo: [c.VOBO_1 || '', c.VOBO_2 || ''], escuela: c.ESCUELA };
+}
+
+/** d: {idTitular, idSuplente, inicio, fin?, motivo, comentario} */
+function apiRegistrarSuplencia(d) {
+  const u = requiere_('personal');
+  const mp = mapaPersonal_();
+  if (!mp[d.idTitular]) throw new Error('Selecciona a quién se va a suplir.');
+  if (!mp[d.idSuplente]) throw new Error('Selecciona al suplente.');
+  if (d.idTitular === d.idSuplente) throw new Error('El suplente debe ser otra persona.');
+  const ini = validarFecha_(d.inicio || hoy_(), 'desde');
+  const fin = d.fin ? validarFecha_(d.fin, 'hasta') : '';
+  if (fin && fin < ini) throw new Error('La fecha final no puede ser antes de la inicial.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const choca = tabla_('Suplencias').find(function (r) {
+      return r.Estatus !== 'CANCELADA' && r.ID_Titular === d.idTitular && (!r.Fecha_Fin || r.Fecha_Fin >= ini) && (!fin || r.Fecha_Inicio <= fin);
+    });
+    if (choca) throw new Error((mp[d.idTitular].Nombre) + ' ya tiene suplente en esas fechas (' + (mp[choca.ID_Suplente] || {}).Nombre + '). Termina esa suplencia primero.');
+    const id = nuevoId_('S');
+    agregar_('Suplencias', [{ ID_Sup: id, ID_Titular: d.idTitular, ID_Suplente: d.idSuplente, Fecha_Inicio: ini, Fecha_Fin: fin,
+      Motivo: String(d.motivo || '').slice(0, 60), Comentario: String(d.comentario || '').slice(0, 200), Estatus: 'VIGENTE',
+      Registro: u.email, Fecha_Registro: sello_() }]);
+    log_(u, 'SUPLENCIA', d.idSuplente + ' suple a ' + d.idTitular + ' desde ' + ini + (fin ? ' hasta ' + fin : ''));
+    return { id: id };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Termina una suplencia: su último día es "fecha" (por defecto hoy). Si aún no empezaba, se cancela. */
+function apiTerminarSuplencia(id, fecha) {
+  const u = requiere_('personal');
+  fecha = validarFecha_(fecha || hoy_());
+  _cache = {};
+  const r = tabla_('Suplencias').find(function (x) { return x.ID_Sup === id && x.Estatus !== 'CANCELADA'; });
+  if (!r) throw new Error('No se encontró la suplencia.');
+  if (fecha < r.Fecha_Inicio) actualizar_('Suplencias', r._fila, { Estatus: 'CANCELADA' });
+  else actualizar_('Suplencias', r._fila, { Fecha_Fin: fecha, Estatus: 'TERMINADA' });
+  log_(u, 'SUPLENCIA', 'Terminó ' + id + ' el ' + fecha);
+  return { ok: true };
+}
+
+/** Baja definitiva: queda inactivo y, si se indica, su horario pasa completo a otra persona. */
+function apiBajaPersona(id, d) {
+  const u = requiere_('personal');
+  d = d || {};
+  const mp = mapaPersonal_();
+  const p = mp[id];
+  if (!p) throw new Error('No se encontró a esa persona.');
+  if (d.pasarA && (!mp[d.pasarA] || d.pasarA === id)) throw new Error('Selecciona a quién pasa el horario.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    actualizar_('Personal', p._fila, { Activo: 'NO', Notas: ('Baja ' + (d.fecha || hoy_()) + (d.motivo ? ': ' + d.motivo : '') + '. ' + (p.Notas || '')).slice(0, 200) });
+    let clases = 0;
+    if (d.pasarA) {
+      tabla_('Horario').forEach(function (r) { if (r.ID_Personal === id) { actualizar_('Horario', r._fila, { ID_Personal: d.pasarA }); clases++; } });
+    }
+    // Termina las suplencias donde era titular o suplente.
+    const hoy = hoy_();
+    tabla_('Suplencias').forEach(function (r) {
+      if (r.Estatus === 'VIGENTE' && (r.ID_Titular === id || r.ID_Suplente === id) && (!r.Fecha_Fin || r.Fecha_Fin >= hoy)) {
+        actualizar_('Suplencias', r._fila, { Fecha_Fin: hoy, Estatus: 'TERMINADA' });
+      }
+    });
+    log_(u, 'PERSONAL', 'Baja ' + id + (d.pasarA ? ', horario a ' + d.pasarA + ' (' + clases + ' clases)' : ''));
+    return { clases: clases };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /* ------------------------------------------------------------------ */

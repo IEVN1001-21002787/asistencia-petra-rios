@@ -727,7 +727,8 @@ function vReportes() {
   S.rep = q;
   $('#main').innerHTML = '<div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:14px">' +
     '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="vCalendario()">' + svg('hoy', 24) + 'Calendario escolar</button>' +
-    '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="formRespaldo()">' + svg('lista', 24) + 'Listas de respaldo</button></div>' +
+    '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="formRespaldo()">' + svg('lista', 24) + 'Listas de respaldo</button>' +
+    (puede('usuarios') ? '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px;grid-column:1/-1" onclick="vUsuarios()">' + svg('alumnos', 24) + 'Usuarios y accesos</button>' : '') + '</div>' +
     '<h3 style="margin-top:0">Concentrado de asistencia</h3><div class="card"><label>Grupo</label><select id="pGru" onchange="S.rep.grupo=this.value">' + opcionesGrupo(q.grupo) + '</select>' +
     '<div class="fila"><div class="crece"><label>Desde</label><input id="pIni" type="date" value="' + q.ini + '" onchange="S.rep.ini=this.value"></div>' +
     '<div class="crece"><label>Hasta</label><input id="pFin" type="date" value="' + q.fin + '" onchange="S.rep.fin=this.value"></div></div>' +
@@ -786,7 +787,12 @@ function txtInc(i) {
   return [fechas, i.hora ? i.hora : '', i.horasClase ? i.horasClase + ' h de clase' : '', i.grupos, i.cubrio ? 'cubrió ' + i.cubrio : '', i.documento]
     .filter(Boolean).join(' · ');
 }
-async function vPersonal() {
+const PER_TABS = [['hoy', 'Hoy'], ['horario', 'Horario'], ['reporte', 'Reporte'], ['maestros', 'Maestros']];
+function fG(g) { return String(g).slice(0, 1) + '°' + String(g).slice(1); }
+function h12(h) { const p = String(h).split(':'); const n = parseInt(p[0], 10); return (n > 12 ? n - 12 : n) + ':' + p[1]; }
+function corto(n) { const p = String(n || '').split(/\s+/); return p.length > 3 ? p.slice(0, 2).join(' ') + ' ' + p.slice(2).join(' ') : n; }
+async function vPersonal(tab) {
+  S.perTab = tab || S.perTab || 'hoy';
   cargando();
   try {
     let P;
@@ -796,29 +802,216 @@ async function vPersonal() {
     S.perRep = S.perRep || { ini: quincena(S.ini.hoy)[0], fin: quincena(S.ini.hoy)[1] };
     const activos = P.personas.filter((p) => p.activo);
     const hoyF = P.hoy.filter((i) => i.tipo !== 'RETARDO' && i.tipo !== 'SALIDA').length;
-    cab('Prefectura y subdirección', 'Personal', '<div class="stats">' +
-      '<div class="stat"><b>' + activos.length + '</b><span>Personas</span></div>' +
+    cab('Maestros y personal', 'Personal', '<div class="stats">' +
       '<div class="stat"><b class="mal">' + hoyF + '</b><span>Ausentes hoy</span></div>' +
-      '<div class="stat"><b class="amb">' + P.hoy.filter((i) => i.tipo === 'RETARDO').length + '</b><span>Retardos hoy</span></div></div>');
-    let h = '<button class="oro ancho grande" onclick="formIncidencia()">' + svg('mas', 22) + 'Registrar incidencia</button>';
-    h += '<div class="seccion"><h3>Hoy</h3></div>';
-    h += P.hoy.length ? '<div class="card" style="padding:2px 14px">' + P.hoy.map((i) =>
-      '<div class="mov" onclick="vPersona(\'' + esc(i.idPersona) + '\')"><span class="circ ' + TIPO_CIRC[i.tipo] + '">' + svg(i.tipo === 'RETARDO' ? 'reloj' : 'personal', 18) + '</span>' +
-      '<div class="t"><b>' + esc(i.nombre) + '</b><span>' + esc(i.tipoTexto) + ' · ' + esc(txtInc(i)) + '</span></div></div>').join('') + '</div>'
-      : '<div class="tenue">Sin faltas, retardos ni licencias registradas hoy.</div>';
-    const r = S.perRep;
-    h += '<div class="seccion"><h3>Reporte</h3></div><div class="card">' +
-      '<div class="fila"><div class="crece"><label>Desde</label><input id="qIni" type="date" value="' + r.ini + '" onchange="S.perRep.ini=this.value"></div>' +
-      '<div class="crece"><label>Hasta</label><input id="qFin" type="date" value="' + r.fin + '" onchange="S.perRep.fin=this.value"></div></div>' +
-      '<div class="acciones"><button class="chico" onclick="perPeriodo(0)">Quincena actual</button><button class="chico" onclick="perPeriodo(-1)">Quincena anterior</button>' +
-      '<button class="chico" onclick="perPeriodo(\'mes\')">Este mes</button></div>' +
-      '<div class="acciones"><button class="prim" onclick="verRepPersonal()">Ver reporte</button><button onclick="imprimirRepPersonal()">Imprimir</button>' +
-      '<button onclick="exportarPersonal()">Descargar en Excel</button></div></div><div id="qRes"></div>';
-    h += '<div class="seccion"><h3>Personal (' + activos.length + ')</h3><button class="chico" onclick="formPersona()">' + svg('mas', 16) + ' Agregar</button></div>';
-    h += '<input id="qQ" placeholder="Buscar por nombre o asignatura" oninput="filtrarPersonal(this.value)" style="margin-bottom:8px"><div id="qLista"></div>';
+      '<div class="stat"><b class="amb">' + P.hoy.filter((i) => i.tipo === 'RETARDO').length + '</b><span>Retardos hoy</span></div>' +
+      '<div class="stat"><b style="color:var(--azul)">' + (P.suplencias || []).length + '</b><span>Suplencias</span></div></div>');
+    let h = '<div class="pestanas">' + PER_TABS.map((t) => '<button class="' + (t[0] === S.perTab ? 'on' : '') + '" onclick="vPersonal(\'' + t[0] + '\')">' + t[1] + '</button>').join('') + '</div>';
+    h += '<div id="perCuerpo"></div>';
     $('#main').innerHTML = h;
-    filtrarPersonal('');
+    ({ hoy: perHoy, horario: perHorario, reporte: perReporte, maestros: perMaestros }[S.perTab])();
   } catch (e) { errVista(e); }
+}
+function perHoy() {
+  const P = S.per;
+  const f = S.perFecha || S.ini.hoy;
+  let h = '<button class="oro ancho grande" onclick="formIncidencia()">' + svg('mas', 22) + 'Registrar incidencia</button>';
+  h += '<div class="seccion"><h3>Clases del día</h3><input type="date" id="perF" value="' + f + '" style="width:auto" onchange="S.perFecha=this.value;pintarClasesDia()"></div>';
+  h += '<div id="clasesDia"><div class="cargando">Cargando…</div></div>';
+  h += '<div class="acciones"><button onclick="imprimirFirmasDia()">Imprimir registro de firmas del día</button><button onclick="imprimirFirmasSemana()">Imprimir semana en blanco</button></div>';
+  h += '<div class="seccion"><h3>Incidencias de hoy</h3></div>';
+  h += P.hoy.length ? '<div class="card" style="padding:2px 14px">' + P.hoy.map((i) =>
+    '<div class="mov" onclick="vPersona(\'' + esc(i.idPersona) + '\')"><span class="circ ' + TIPO_CIRC[i.tipo] + '">' + svg(i.tipo === 'RETARDO' ? 'reloj' : 'personal', 18) + '</span>' +
+    '<div class="t"><b>' + esc(i.nombre) + '</b><span>' + esc(i.tipoTexto) + ' · ' + esc(txtInc(i)) + '</span></div></div>').join('') + '</div>'
+    : '<div class="tenue">Sin faltas, retardos ni licencias registradas hoy.</div>';
+  h += '<div class="seccion"><h3>Suplencias vigentes</h3><button class="chico" onclick="formSuplencia()">' + svg('mas', 16) + ' Suplencia</button></div>';
+  h += tarjetasSuplencias(P.suplencias || []);
+  $('#perCuerpo').innerHTML = h;
+  pintarClasesDia();
+}
+function tarjetasSuplencias(l) {
+  return l.length ? l.map((x) => '<div class="card"><div class="fila"><span class="crece"><b>' + esc(x.suplente) + '</b><br>' +
+    '<span class="tenue">Suple a ' + esc(x.titular) + ' · desde ' + fC(x.inicio) + (x.fin ? ' hasta ' + fC(x.fin) : ' (hasta nuevo aviso)') + (x.motivo ? ' · ' + esc(x.motivo) : '') + '</span></span>' +
+    '<button class="chico" onclick="terminarSuplencia(\'' + esc(x.id) + '\')">Terminar</button></div></div>').join('')
+    : '<div class="tenue">Nadie está supliendo a otra persona.</div>';
+}
+const ESTADO_CLASE = { OK: '', SUPLENTE: 'k-sup', RETARDO: 'k-ret', SALIDA: 'k-sal', SIN_MAESTRO: 'k-sin', SIN_ASIGNAR: 'k-libre' };
+function rejillaClases(d, editable) {
+  const mapa = {};
+  d.clases.forEach((c) => { mapa[c.ini + '|' + c.grupo] = c; });
+  let ant = null;
+  return '<div class="scroll"><table class="tabla horario"><tr><th class="fija">Hora</th>' + d.grupos.map((g) => '<th>' + fG(g) + '</th>').join('') + '</tr>' +
+    d.modulos.map((m) => {
+      const receso = ant && ant !== m.ini ? '<tr class="receso"><td class="fija">' + h12(ant) + '</td><td colspan="' + d.grupos.length + '" style="text-align:left;padding-left:12px">Receso ' + h12(ant) + '-' + h12(m.ini) + '</td></tr>' : '';
+      ant = m.fin;
+      return receso + '<tr><td class="fija"><b>' + h12(m.ini) + '</b><br>' + h12(m.fin) + '</td>' + d.grupos.map((g) => {
+        const c = mapa[m.ini + '|' + g];
+        const clic = editable ? ' onclick="editarClase(' + editable + ',\'' + m.ini + '\',\'' + esc(g) + '\')"' : (c && c.idMaestro ? ' onclick="vPersona(\'' + esc(c.idMaestro) + '\')"' : '');
+        if (!c) return '<td class="k-libre"' + clic + '>—</td>';
+        return '<td class="' + (ESTADO_CLASE[c.estado] || '') + '"' + clic + '><b>' + esc(c.asignatura) + '</b><br>' + esc(corto(c.maestro || c.nombre || '')) +
+          (c.estado === 'SUPLENTE' ? '<br><i>suple a ' + esc(corto(c.titular)) + '</i>' : '') +
+          (c.estado === 'SIN_MAESTRO' ? '<br><i>Sin maestro</i>' : '') + (c.estado === 'RETARDO' || c.estado === 'SALIDA' ? '<br><i>' + esc((c.incidencias || []).join(', ')) + '</i>' : '') + '</td>';
+      }).join('') + '</tr>';
+    }).join('') + '</table></div>';
+}
+async function pintarClasesDia() {
+  const el = $('#clasesDia'); if (!el) return;
+  el.innerHTML = '<div class="cargando">Cargando…</div>';
+  try {
+    const f = S.perFecha || S.ini.hoy;
+    let d;
+    try { d = await api('apiClasesDia', f); guardarLocal('clases:' + f, d); }
+    catch (e) { if (!e.red || !leerLocal('clases:' + f)) throw e; d = leerLocal('clases:' + f); }
+    S.clasesDia = d;
+    if (!d.clases.length) { el.innerHTML = '<div class="aviso">' + (d.dia === 0 || d.dia === 6 ? 'Es fin de semana.' : 'Todavía no hay horario cargado. Ve a la pestaña Horario.') + '</div>'; return; }
+    const n = (e) => d.clases.filter((c) => c.estado === e).length;
+    el.innerHTML = (d.habil ? '' : '<div class="aviso">Este día está marcado sin clase en el calendario.</div>') +
+      '<div class="leyenda"><span class="k-sin">Sin maestro ' + n('SIN_MAESTRO') + '</span><span class="k-sup">Con suplente ' + n('SUPLENTE') + '</span>' +
+      '<span class="k-ret">Retardo ' + n('RETARDO') + '</span><span>Sin incidencia ' + n('OK') + '</span></div>' + rejillaClases(d, false);
+  } catch (e) { el.innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
+}
+function lunesDe(f) { const p = f.split('-').map(Number); const d = new Date(p[0], p[1] - 1, p[2]); const w = d.getDay() || 7; d.setDate(d.getDate() - w + 1); return d; }
+function fISO(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function paginaFirmas(d, fecha) {
+  const mapa = {};
+  d.clases.forEach((c) => { mapa[c.ini + '|' + c.grupo] = c; });
+  let ant = null;
+  const filas = d.modulos.map((m) => {
+    const receso = ant && ant !== m.ini ? '<tr><td colspan="' + (d.grupos.length + 2) + '" class="f-receso">R &nbsp; E &nbsp; C &nbsp; E &nbsp; S &nbsp; O</td></tr>' : '';
+    ant = m.fin;
+    const obs = d.grupos.map((g) => mapa[m.ini + '|' + g]).filter((c) => c && fecha && (c.estado === 'SIN_MAESTRO' || c.estado === 'RETARDO' || c.estado === 'SALIDA'))
+      .map((c) => fG(c.grupo) + ': ' + (c.estado === 'SIN_MAESTRO' ? 'sin maestro' : (c.incidencias || []).join(', ').toLowerCase())).join('<br>');
+    return receso + '<tr class="f-asig"><td rowspan="2" class="f-hora">' + h12(m.ini) + '-' + h12(m.fin) + '</td>' + d.grupos.map((g) => '<td>' + esc((mapa[m.ini + '|' + g] || {}).asignatura || '') + '</td>').join('') +
+      '<td rowspan="2" class="f-obs">' + obs + '</td></tr><tr class="f-nom">' + d.grupos.map((g) => {
+        const c = mapa[m.ini + '|' + g] || {};
+        const nom = c.maestro || c.nombre || '';
+        return '<td>' + esc(nom) + (c.suplente ? '<br><small>(suple a ' + esc(c.titular) + ')</small>' : '') + '</td>';
+      }).join('') + '</tr>';
+  }).join('');
+  const dias = ['', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES'];
+  return '<div class="pagina hoja-firmas"><div class="f-tit">' + esc(S.ini.config.escuela || '').toUpperCase() + '</div>' +
+    '<div class="f-cab"><span>TURNO: ' + esc(d.turno || '') + '</span><span>REGISTRO DE FIRMAS</span><span></span></div>' +
+    '<div class="f-cab"><span>DÍA: ' + dias[d.dia] + '</span><span></span><span>FECHA: ' + (fecha ? fF(fecha) : '______________________') + '</span></div>' +
+    '<table class="f-tabla"><tr><th>HORA/GRUPO</th>' + d.grupos.map((g) => '<th>' + fG(g) + '</th>').join('') + '<th>OBSERVACIONES</th></tr>' + filas + '</table>' +
+    '<div class="firmas"><div>' + esc(d.vobo[0] || '') + '<br>Vo.Bo.</div><div>' + esc(d.vobo[1] || '') + '<br>Vo.Bo.</div></div></div>';
+}
+const ESTILO_FIRMAS = '<style>@page{size:landscape;margin:8mm}.hoja-firmas .f-tabla{width:100%;border-collapse:collapse;font-size:9px}.f-tabla th,.f-tabla td{border:1px solid #000;padding:2px;text-align:center;vertical-align:bottom}' +
+  '.f-tabla th{background:#bbb}.f-asig td{background:#ddd;font-weight:700;vertical-align:middle}.f-nom td{height:44px}.f-hora{font-weight:700;vertical-align:middle!important;white-space:nowrap}' +
+  '.f-obs{width:13%;text-align:left!important;vertical-align:top!important;font-size:8px;background:#fff!important}.f-receso{background:#bbb;font-weight:700;letter-spacing:2px}.f-tit{text-align:center;font-weight:700;background:#bbb;font-size:11px}' +
+  '.f-cab{display:flex;justify-content:space-between;font-weight:700;font-size:10px;margin:2px 0}.f-cab span{flex:1}.f-cab span:nth-child(2){text-align:center}.f-cab span:last-child{text-align:right}.hoja-firmas .firmas{margin-top:26px}</style>';
+async function imprimirFirmasDia() {
+  const f = S.perFecha || S.ini.hoy;
+  try {
+    const d = S.clasesDia && S.clasesDia.fecha === f ? S.clasesDia : await api('apiClasesDia', f);
+    if (!d.clases.length) return toast('Ese día no tiene clases en el horario.', 'err');
+    imprimir(ESTILO_FIRMAS + paginaFirmas(d, f));
+  } catch (e) { error(e); }
+}
+async function imprimirFirmasSemana() {
+  toast('Preparando la semana…');
+  try {
+    const H = await api('apiHorario');
+    const nombres = {}; H.personas.forEach((p) => { nombres[p.id] = p.nombre; });
+    const paginas = [1, 2, 3, 4, 5].map((dia) => paginaFirmas({ dia: dia, modulos: H.modulos, grupos: H.grupos, turno: H.turno, vobo: H.vobo,
+      clases: H.clases.filter((c) => c.dia === dia).map((c) => Object.assign({}, c, { maestro: nombres[c.idPersona] || '' })) }, ''));
+    imprimir(ESTILO_FIRMAS + paginas.join(''));
+  } catch (e) { error(e); }
+}
+async function perHorario() {
+  S.horDia = S.horDia || Math.min(Math.max(new Date().getDay(), 1), 5);
+  $('#perCuerpo').innerHTML = '<div class="cargando">Cargando…</div>';
+  try {
+    S.hor = await api('apiHorario');
+    pintarHorario();
+  } catch (e) { $('#perCuerpo').innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
+}
+function pintarHorario() {
+  const H = S.hor, nombres = {};
+  H.personas.forEach((p) => { nombres[p.id] = p.nombre; });
+  const d = { modulos: H.modulos, grupos: H.grupos, clases: H.clases.filter((c) => c.dia === S.horDia).map((c) => Object.assign({}, c, { maestro: nombres[c.idPersona] || '', estado: c.idPersona ? 'OK' : 'SIN_ASIGNAR' })) };
+  $('#perCuerpo').innerHTML = '<div class="chips" style="margin-bottom:10px">' + ['Lun', 'Mar', 'Mié', 'Jue', 'Vie'].map((t, i) =>
+    '<button class="chip-g' + (S.horDia === i + 1 ? ' on' : '') + '" onclick="S.horDia=' + (i + 1) + ';pintarHorario()">' + t + '</button>').join('') + '</div>' +
+    '<div class="tenue" style="margin-bottom:8px">Toca una clase para cambiar la materia o el maestro. Para una ausencia temporal usa una suplencia; el horario no cambia.</div>' +
+    rejillaClases(d, S.horDia) + '<div class="acciones"><button onclick="imprimirFirmasSemana()">Imprimir semana en blanco</button></div>';
+}
+function editarClase(dia, ini, g) {
+  const H = S.hor;
+  const c = H.clases.find((x) => x.dia === dia && x.ini === ini && x.grupo === g) || {};
+  const materias = Array.from(new Set(H.clases.map((x) => x.asignatura).filter(Boolean))).sort();
+  modal('<h2>' + ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'][dia] + ' ' + h12(ini) + ' · ' + fG(g) + '</h2>' +
+    '<label>Materia</label><input id="hAsi" list="hMat" value="' + esc(c.asignatura || '') + '"><datalist id="hMat">' + materias.map((m) => '<option value="' + esc(m) + '">').join('') + '</datalist>' +
+    '<label>Maestro</label><select id="hPer"><option value="">Sin asignar</option>' + H.personas.filter((p) => p.activo || p.id === c.idPersona).map((p) =>
+      '<option value="' + esc(p.id) + '"' + (p.id === c.idPersona ? ' selected' : '') + '>' + esc(p.nombre) + '</option>').join('') + '</select>' +
+    '<div class="acciones"><button onclick="guardarClase(' + dia + ',\'' + ini + '\',\'' + esc(g) + '\',true)">Dejar libre</button><button onclick="cerrar()">Cancelar</button>' +
+    '<button class="prim" id="hBtn" onclick="guardarClase(' + dia + ',\'' + ini + '\',\'' + esc(g) + '\')">Guardar</button></div>');
+}
+async function guardarClase(dia, ini, g, libre) {
+  try {
+    await api('apiGuardarClase', { dia: dia, ini: ini, grupo: g, asignatura: libre ? '' : $('#hAsi').value, idPersona: libre ? '' : $('#hPer').value });
+    cerrar(); toast('Horario actualizado.');
+    S.hor = await api('apiHorario'); pintarHorario();
+  } catch (e) { error(e); }
+}
+function perReporte() {
+  const r = S.perRep;
+  $('#perCuerpo').innerHTML = '<div class="card">' +
+    '<div class="fila"><div class="crece"><label>Desde</label><input id="qIni" type="date" value="' + r.ini + '" onchange="S.perRep.ini=this.value"></div>' +
+    '<div class="crece"><label>Hasta</label><input id="qFin" type="date" value="' + r.fin + '" onchange="S.perRep.fin=this.value"></div></div>' +
+    '<div class="acciones"><button class="chico" onclick="perPeriodo(0)">Quincena actual</button><button class="chico" onclick="perPeriodo(-1)">Quincena anterior</button>' +
+    '<button class="chico" onclick="perPeriodo(\'mes\')">Este mes</button></div>' +
+    '<div class="acciones"><button class="prim" onclick="verRepPersonal()">Ver reporte</button><button onclick="imprimirRepPersonal()">Imprimir</button>' +
+    '<button onclick="exportarPersonal()">Descargar en Excel</button></div></div><div id="qRes"></div>';
+}
+function perMaestros() {
+  const activos = S.per.personas.filter((p) => p.activo);
+  $('#perCuerpo').innerHTML = '<div class="acciones" style="margin-top:0"><button class="prim" onclick="formPersona()">' + svg('mas', 16) + ' Agregar persona</button>' +
+    '<button onclick="formSuplencia()">Registrar suplencia</button></div>' +
+    '<div class="seccion"><h3>Personal activo (' + activos.length + ')</h3></div>' +
+    '<input id="qQ" placeholder="Buscar por nombre o materia" oninput="filtrarPersonal(this.value)" style="margin-bottom:8px"><div id="qLista"></div>';
+  filtrarPersonal('');
+}
+function opcionesPersonas(sel, excluir) {
+  return '<option value="">Selecciona…</option>' + S.per.personas.filter((p) => p.activo && p.id !== excluir).map((p) =>
+    '<option value="' + esc(p.id) + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.nombre) + '</option>').join('');
+}
+function formSuplencia(idTitular) {
+  modal('<h2>Registrar suplencia</h2><div class="aviso info">El suplente da las clases del titular en esas fechas. El horario no cambia; al terminar la suplencia regresa el titular.</div>' +
+    '<label>¿A quién se suple?</label><select id="uTit">' + opcionesPersonas(idTitular) + '</select>' +
+    '<label>Suplente</label><select id="uSup">' + opcionesPersonas() + '</select>' +
+    '<div class="tenue">Si el suplente es nuevo, primero agrégalo en Maestros → Agregar persona.</div>' +
+    '<div class="fila"><div class="crece"><label>Desde</label><input id="uIni" type="date" value="' + S.ini.hoy + '"></div>' +
+    '<div class="crece"><label>Hasta (vacío = hasta nuevo aviso)</label><input id="uFin" type="date"></div></div>' +
+    '<label>Motivo</label><select id="uMot"><option>Licencia médica</option><option>Permiso</option><option>Comisión</option><option>Incapacidad</option><option>Interinato</option><option>Otro</option></select>' +
+    '<label>Comentario</label><input id="uCom">' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="uBtn" onclick="guardarSuplencia()">Guardar</button></div>');
+}
+async function guardarSuplencia() {
+  const b = $('#uBtn'); b.disabled = true;
+  try {
+    await api('apiRegistrarSuplencia', { idTitular: $('#uTit').value, idSuplente: $('#uSup').value, inicio: $('#uIni').value, fin: $('#uFin').value, motivo: $('#uMot').value, comentario: $('#uCom').value });
+    cerrar(); toast('Suplencia registrada.'); vPersonal();
+  } catch (e) { b.disabled = false; error(e); }
+}
+async function terminarSuplencia(id) {
+  const f = prompt('Último día de la suplencia (aaaa-mm-dd):', S.ini.hoy);
+  if (!f) return;
+  try { await api('apiTerminarSuplencia', id, f.trim()); toast('Suplencia terminada.'); cerrar(); vPersonal(); } catch (e) { error(e); }
+}
+function formBaja() {
+  const p = S.perSel;
+  modal('<h2>Dar de baja</h2><div class="tenue">' + esc(p.nombre) + '</div>' +
+    '<div class="aviso">Úsalo cuando la persona ya no trabaja en la escuela. Sus registros se conservan. Si solo falta por un tiempo, mejor registra una suplencia.</div>' +
+    '<label>¿Quién toma su horario?</label><select id="bPas"><option value="">Nadie por ahora (las clases quedan sin asignar)</option>' + opcionesPersonas('', p.id).replace('<option value="">Selecciona…</option>', '') + '</select>' +
+    '<label>Motivo</label><input id="bMot" placeholder="Ej. cambio de adscripción, jubilación">' +
+    '<div class="aviso info">Si tenía acceso a la plataforma, quítalo también en Reportes → Usuarios y accesos.</div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="bBtn" onclick="guardarBaja()">Dar de baja</button></div>');
+}
+async function guardarBaja() {
+  const b = $('#bBtn'); b.disabled = true;
+  try {
+    const r = await api('apiBajaPersona', S.perSel.id, { pasarA: $('#bPas').value, motivo: $('#bMot').value });
+    cerrar(); toast('Baja registrada.' + (r.clases ? ' ' + r.clases + ' clases pasaron al nuevo maestro.' : '')); vPersonal('maestros');
+  } catch (e) { b.disabled = false; error(e); }
 }
 function filtrarPersonal(q) {
   const n = (x) => String(x || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -942,7 +1135,8 @@ async function vPersona(id) {
       '<span class="tenue">' + esc([p.puesto, p.asignatura].filter(Boolean).join(' · ')) + (p.activo ? '' : ' · inactivo') + '</span></span></div>' +
       (res ? '<div class="stats claro" style="margin-top:12px">' + res + '</div>' : '') +
       '<div class="acciones">' + (p.activo ? '<button class="prim" onclick="formIncidencia(\'' + esc(p.id) + '\')">Registrar incidencia</button>' : '') +
-      '<button onclick="formPersona(true)">Editar datos</button></div>' +
+      '<button onclick="formPersona(true)">Editar datos</button>' + (p.activo ? '<button onclick="formSuplencia(\'' + esc(p.id) + '\')">Asignar suplente</button>' +
+        '<button onclick="formBaja()">Dar de baja</button>' : '') + '</div>' +
       '<h3>Ciclo ' + esc(r.ciclo) + ' (' + r.incidencias.length + ')</h3>' +
       (r.incidencias.length ? r.incidencias.map((i) => '<div class="card"><div class="fila"><span class="circ ' + TIPO_CIRC[i.tipo] + '" style="width:32px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center">' +
         svg(i.tipo === 'RETARDO' ? 'reloj' : 'personal', 16) + '</span><span class="crece"><b>' + esc(i.tipoTexto) + '</b>' +
@@ -962,11 +1156,11 @@ async function cancelarIncidencia(id) {
 function formPersona(editar) {
   const p = editar ? S.perSel : { nombre: '', puesto: 'Docente', asignatura: '', activo: true, notas: '' };
   modal('<h2>' + (editar ? 'Editar datos' : 'Agregar persona') + '</h2>' +
-    '<label>Nombre completo (apellidos y nombre)</label><input id="eNom" value="' + esc(p.nombre) + '" placeholder="Ej. García López María">' +
+    '<label>Nombre completo (como aparece en el horario)</label><input id="eNom" value="' + esc(p.nombre) + '" placeholder="Ej. María López García">' +
     '<label>Puesto</label><select id="ePue">' + (S.per.puestos || ['Docente']).map((x) => '<option' + (x === p.puesto ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select>' +
     '<label>Asignatura o función</label><input id="eAsi" value="' + esc(p.asignatura) + '" placeholder="Ej. Matemáticas">' +
     '<label>Notas</label><input id="eNot" value="' + esc(p.notas) + '">' +
-    (editar ? '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="eAct" style="width:auto"' + (p.activo ? ' checked' : '') + '> Activo (desmarca si ya no labora aquí)</label>' : '') +
+    (editar ? '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="eAct" style="width:auto"' + (p.activo ? ' checked' : '') + '> Activo</label>' : '') +
     '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="eBtn" onclick="guardarPersona(' + (editar ? 'true' : 'false') + ')">Guardar</button></div>');
 }
 async function guardarPersona(editar) {
@@ -974,8 +1168,61 @@ async function guardarPersona(editar) {
   try {
     await api('apiGuardarPersona', { id: editar ? S.perSel.id : '', nombre: $('#eNom').value, puesto: $('#ePue').value, asignatura: $('#eAsi').value,
       notas: $('#eNot').value, activo: editar ? $('#eAct').checked : true });
-    cerrar(); toast('Datos guardados.'); vPersonal();
+    cerrar(); toast('Datos guardados.'); vPersonal('maestros');
   } catch (e) { b.disabled = false; error(e); }
+}
+
+/* ---------------- Usuarios y accesos ---------------- */
+const ROL_TXT = { ADMIN: 'Administración', DIRECTOR: 'Dirección', SUBDIRECTOR: 'Subdirección', SECRETARIA: 'Secretaría', PREFECTO: 'Prefectura', TRABAJO_SOCIAL: 'Trabajo social' };
+const ROL_DESC = {
+  ADMIN: 'Todo, incluido asignar este rol.',
+  DIRECTOR: 'Acceso completo: alumnos, maestros, calendario, aprobar salidas, justificar y dar o quitar accesos.',
+  SUBDIRECTOR: 'Acceso completo: alumnos, maestros, calendario, aprobar salidas, justificar y dar o quitar accesos.',
+  SECRETARIA: 'Acceso completo: alumnos, maestros, calendario, aprobar salidas, justificar y dar o quitar accesos.',
+  PREFECTO: 'Lista, retardos, salidas, alumnos, seguimiento y maestros. No aprueba salidas, no cambia el calendario ni los accesos.',
+  TRABAJO_SOCIAL: 'Solo alumnos: consultar, justificar faltas y seguimiento. No ve nada de maestros.',
+};
+async function vUsuarios() {
+  S.vista = 'reportes';
+  cab('Quién puede entrar a la plataforma', 'Usuarios y accesos');
+  cargando();
+  try {
+    const r = await api('apiUsuarios');
+    S.usu = r;
+    const act = r.usuarios.filter((u) => u.activo), ina = r.usuarios.filter((u) => !u.activo);
+    const tarjeta = (u) => '<div class="res fila" onclick="formUsuario(\'' + esc(u.correo) + '\')"><span class="ini">' + esc(iniciales(u.nombre).toUpperCase()) + '</span>' +
+      '<span class="crece"><b>' + esc(u.nombre) + '</b><br><span class="tenue">' + esc(u.correo) + '</span></span>' +
+      (u.activo ? badge('SI', ROL_TXT[u.rol] || u.rol) : badge('BAJA', 'Sin acceso')) + '</div>';
+    $('#main').innerHTML = '<button class="prim ancho" onclick="formUsuario()">' + svg('mas', 18) + ' Dar acceso a alguien</button>' +
+      '<div class="aviso info" style="margin-top:12px">Cada persona entra con su cuenta de Google. Si alguien deja la escuela, ábrelo y toca "Quitar acceso": desde su siguiente acción ya no puede ver nada.</div>' +
+      '<div class="seccion"><h3>Con acceso (' + act.length + ')</h3></div><div class="card" style="padding:4px 10px">' + (act.map(tarjeta).join('') || '<div class="tenue">Nadie</div>') + '</div>' +
+      (ina.length ? '<div class="seccion"><h3>Sin acceso (' + ina.length + ')</h3></div><div class="card" style="padding:4px 10px">' + ina.map(tarjeta).join('') + '</div>' : '') +
+      '<div class="seccion"><h3>Qué puede hacer cada rol</h3></div><div class="card">' + Object.keys(ROL_DESC).filter((k) => k !== 'ADMIN').map((k) =>
+        '<p style="margin:6px 0"><b>' + ROL_TXT[k] + ':</b> <span class="tenue">' + ROL_DESC[k] + '</span></p>').join('') + '</div>' +
+      '<div class="acciones"><button onclick="ir(\'reportes\')">Volver</button></div>';
+  } catch (e) { errVista(e); }
+}
+function formUsuario(correo) {
+  const u = correo ? S.usu.usuarios.find((x) => x.correo === correo) : { correo: '', nombre: '', rol: 'PREFECTO', activo: true };
+  const yo = correo === S.usu.yo;
+  const roles = S.usu.roles.indexOf(u.rol) < 0 ? S.usu.roles.concat([u.rol]) : S.usu.roles;
+  modal('<h2>' + (correo ? esc(u.nombre) : 'Dar acceso') + '</h2>' +
+    '<label>Correo de Google</label><input id="zCor" type="email" autocomplete="off" value="' + esc(u.correo) + '"' + (correo ? ' disabled' : '') + ' placeholder="nombre@gmail.com">' +
+    '<label>Nombre</label><input id="zNom" value="' + esc(u.nombre) + '">' +
+    '<label>Rol</label><select id="zRol" onchange="$(\'#zDesc\').textContent=ROL_DESC[this.value]||\'\'"' + (yo ? ' disabled' : '') + '>' + roles.map((r) =>
+      '<option value="' + r + '"' + (r === u.rol ? ' selected' : '') + '>' + (ROL_TXT[r] || r) + '</option>').join('') + '</select>' +
+    '<div class="tenue" id="zDesc" style="margin-top:6px">' + (ROL_DESC[u.rol] || '') + '</div>' +
+    (yo ? '<div class="aviso info">Es tu cuenta: tu rol y tu acceso solo los puede cambiar otra persona con acceso completo.</div>' : '') +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button>' +
+    (correo && !yo ? (u.activo ? '<button class="peligro" onclick="guardarUsuario(false)">Quitar acceso</button>' : '<button onclick="guardarUsuario(true)">Devolver acceso</button>') : '') +
+    '<button class="prim" id="zBtn" onclick="guardarUsuario(' + (u.activo ? 'true' : 'false') + ')">Guardar</button></div>');
+}
+async function guardarUsuario(activo) {
+  if (!activo && !confirm('¿Quitar el acceso a ' + $('#zNom').value + '? Ya no podrá entrar a la plataforma.')) return;
+  try {
+    await api('apiGuardarUsuario', { correo: $('#zCor').value, nombre: $('#zNom').value, rol: $('#zRol').value, activo: activo });
+    cerrar(); toast(activo ? 'Acceso guardado.' : 'Acceso quitado.'); vUsuarios();
+  } catch (e) { error(e); }
 }
 
 /* ---------------- Calendario escolar ---------------- */
