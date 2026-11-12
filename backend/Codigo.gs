@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.6';
+const VERSION = '2.7';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -77,6 +77,7 @@ const PERMISOS = {
   alumnos: CON_PREFECTOS,
   calendario: COMPLETO,
   personal: CON_PREFECTOS, // maestros, horario, suplencias: todos menos trabajo social
+  editarHorario: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR'], // qué grupos y horas da cada maestro
   usuarios: COMPLETO,      // dar o quitar acceso a la plataforma
 };
 
@@ -123,7 +124,7 @@ const ACCIONES = {
   apiUsuarios: apiUsuarios, apiGuardarUsuario: apiGuardarUsuario,
   apiHorario: apiHorario, apiGuardarClase: apiGuardarClase, apiClasesDia: apiClasesDia,
   apiRegistrarSuplencia: apiRegistrarSuplencia, apiTerminarSuplencia: apiTerminarSuplencia, apiBajaPersona: apiBajaPersona,
-  apiAsignarCobertura: apiAsignarCobertura, apiAusencias: apiAusencias,
+  apiAsignarCobertura: apiAsignarCobertura, apiAusencias: apiAusencias, apiGuardarClases: apiGuardarClases,
 };
 
 let _correoActual = null;
@@ -1423,7 +1424,7 @@ function modulos_() {
 }
 
 function personaCorta_(p) {
-  return p ? { id: p.ID_Personal, nombre: p.Nombre, activo: String(p.Activo).toUpperCase() !== 'NO' } : null;
+  return p ? { id: p.ID_Personal, nombre: p.Nombre, puesto: p.Puesto, activo: String(p.Activo).toUpperCase() !== 'NO' } : null;
 }
 
 /** Suplencias que cubren la fecha f. Fecha_Fin vacía = hasta nuevo aviso. */
@@ -1451,32 +1452,50 @@ function apiHorario() {
   };
 }
 
-/** d: {dia, ini, grupo, asignatura, idPersona}. Sin asignatura ni persona, el módulo queda libre. */
-function apiGuardarClase(d) {
-  const u = requiere_('personal');
+/** Aplica un cambio de clase sobre la hoja ya bloqueada. Devuelve el texto para la bitácora. */
+function guardarClase_(d, mods, grupos, mp) {
   const dia = parseInt(d.dia, 10);
   if (!(dia >= 1 && dia <= 5)) throw new Error('Día no válido.');
-  const m = modulos_().find(function (x) { return x.ini === d.ini; });
+  const m = mods.find(function (x) { return x.ini === d.ini; });
   if (!m) throw new Error('Módulo no válido.');
-  if (grupos_().indexOf(d.grupo) < 0) throw new Error('Grupo no válido.');
+  if (grupos.indexOf(d.grupo) < 0) throw new Error('Grupo no válido.');
   const asig = String(d.asignatura || '').trim().toUpperCase().slice(0, 40);
   const idp = String(d.idPersona || '');
-  if (idp && !mapaPersonal_()[idp]) throw new Error('No se encontró al maestro.');
+  if (idp && !mp[idp]) throw new Error('No se encontró al maestro.');
+  const x = tabla_('Horario').find(function (r) { return parseInt(r.Dia, 10) === dia && r.Hora_Inicio === m.ini && r.Grupo === d.grupo; });
+  if (idp) {
+    const choque = tabla_('Horario').find(function (r) { return parseInt(r.Dia, 10) === dia && r.Hora_Inicio === m.ini && r.ID_Personal === idp && r.Grupo !== d.grupo; });
+    if (choque) throw new Error(mp[idp].Nombre + ' ya tiene clase el ' + DIAS_SEMANA[dia].toLowerCase() + ' a las ' + m.ini + ' con ' + choque.Grupo + '.');
+  }
+  if (!asig && !idp) {
+    if (x) { sh_('Horario').deleteRow(x._fila); _cache = {}; }
+  } else if (x) {
+    actualizar_('Horario', x._fila, { Asignatura: asig, ID_Personal: idp, Hora_Fin: m.fin });
+  } else {
+    agregar_('Horario', [{ Dia: String(dia), Hora_Inicio: m.ini, Hora_Fin: m.fin, Grupo: d.grupo, Asignatura: asig, ID_Personal: idp }]);
+  }
+  return DIAS_SEMANA[dia] + ' ' + m.ini + ' ' + d.grupo + ': ' + (asig || 'libre') + ' ' + (idp || 'sin maestro');
+}
+
+/** d: {dia, ini, grupo, asignatura, idPersona}. Sin asignatura ni persona, el módulo queda libre. */
+function apiGuardarClase(d) {
+  return apiGuardarClases([d]);
+}
+
+/** Varios cambios de horario de una vez (por ejemplo, pasar un grupo completo a otro maestro). */
+function apiGuardarClases(cambios) {
+  const u = requiere_('editarHorario');
+  if (!Array.isArray(cambios) || !cambios.length) throw new Error('No hay cambios.');
+  if (cambios.length > 60) throw new Error('Demasiados cambios a la vez.');
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
     _cache = {};
-    const x = tabla_('Horario').find(function (r) { return parseInt(r.Dia, 10) === dia && r.Hora_Inicio === m.ini && r.Grupo === d.grupo; });
-    if (!asig && !idp) {
-      if (x) sh_('Horario').deleteRow(x._fila);
-    } else if (x) {
-      actualizar_('Horario', x._fila, { Asignatura: asig, ID_Personal: idp, Hora_Fin: m.fin });
-    } else {
-      agregar_('Horario', [{ Dia: String(dia), Hora_Inicio: m.ini, Hora_Fin: m.fin, Grupo: d.grupo, Asignatura: asig, ID_Personal: idp }]);
-    }
+    const mods = modulos_(), grupos = grupos_(), mp = mapaPersonal_();
+    const textos = cambios.map(function (d) { return guardarClase_(d, mods, grupos, mp); });
     _cache = {};
-    log_(u, 'HORARIO', DIAS_SEMANA[dia] + ' ' + m.ini + ' ' + d.grupo + ': ' + (asig || 'libre') + ' ' + idp);
-    return { ok: true };
+    log_(u, 'HORARIO', textos.join(' | ').slice(0, 1000));
+    return { ok: true, cambios: textos.length };
   } finally {
     lock.releaseLock();
   }
@@ -1713,6 +1732,7 @@ function apiBajaPersona(id, d) {
   const p = mp[id];
   if (!p) throw new Error('No se encontró a esa persona.');
   if (d.pasarA && (!mp[d.pasarA] || d.pasarA === id)) throw new Error('Selecciona a quién pasa el horario.');
+  if (d.pasarA && !tiene_(u, 'editarHorario')) throw new Error('Solo dirección y subdirección pueden pasar el horario a otra persona.');
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {

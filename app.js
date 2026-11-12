@@ -787,7 +787,7 @@ function txtInc(i) {
   return [fechas, i.hora ? i.hora : '', i.horasClase ? i.horasClase + ' h de clase' : '', i.grupos, i.cubrio ? 'cubrió ' + i.cubrio : '', i.documento]
     .filter(Boolean).join(' · ');
 }
-const PER_TABS = [['hoy', 'Hoy'], ['ausencias', 'Ausencias'], ['horario', 'Horario'], ['reporte', 'Reporte'], ['maestros', 'Personal']];
+const PER_TABS = [['hoy', 'Hoy'], ['ausencias', 'Ausencias'], ['horario', 'Maestros'], ['reporte', 'Reporte'], ['maestros', 'Personal']];
 function fG(g) { return String(g).slice(0, 1) + '°' + String(g).slice(1); }
 function h12(h) { const p = String(h).split(':'); const n = parseInt(p[0], 10); return (n > 12 ? n - 12 : n) + ':' + p[1]; }
 function corto(n) { const p = String(n || '').split(/\s+/); return p.length > 3 ? p.slice(0, 2).join(' ') + ' ' + p.slice(2).join(' ') : n; }
@@ -850,6 +850,7 @@ function rejillaClases(d, editable) {
           : c && (c.estado === 'SIN_MAESTRO' || c.estado === 'CUBIERTA') ? ' onclick="formCobertura(\'' + m.ini + '\',\'' + esc(g) + '\')"'
           : (c && c.idMaestro ? ' onclick="vPersona(\'' + esc(c.idMaestro) + '\')"' : '');
         if (!c) return '<td class="k-libre"' + clic + '>—</td>';
+        if (c.estado === 'SIN_ASIGNAR') return '<td class="k-sin"' + clic + '><b>' + esc(c.asignatura) + '</b><br><i>Sin maestro asignado</i></td>';
         if (c.estado === 'SIN_MAESTRO' || c.estado === 'CUBIERTA') {
           return '<td class="' + ESTADO_CLASE[c.estado] + '"' + clic + '><b>' + esc(c.asignatura) + '</b><br><span class="aus">' + esc(corto(c.maestro)) + '</span> <b class="sigla">' + esc(c.sigla || '') + '</b>' +
             (c.estado === 'CUBIERTA' ? '<br><b>Cubre: ' + esc(corto(c.cubre)) + '</b>' : '<br><b>Sin cubrir</b><br><i>toca para asignar</i>') + '</td>';
@@ -990,8 +991,10 @@ async function perAusencias() {
       '<div class="seccion"><h3>Personal de apoyo y directivos (' + ap.length + ')</h3></div>' + (ap.map(tarjeta).join('') || '<div class="tenue">Sin ausencias registradas en estos días.</div>');
   } catch (e) { $('#perCuerpo').innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
 }
+const DIAS_C = ['', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie'];
 async function perHorario() {
   S.horDia = S.horDia || Math.min(Math.max(new Date().getDay(), 1), 5);
+  S.horModo = S.horModo || 'maestro';
   $('#perCuerpo').innerHTML = '<div class="cargando">Cargando…</div>';
   try {
     S.hor = await api('apiHorario');
@@ -999,13 +1002,130 @@ async function perHorario() {
   } catch (e) { $('#perCuerpo').innerHTML = '<div class="aviso err">' + esc(e.message) + '</div>'; }
 }
 function pintarHorario() {
+  const modo = '<div class="modo"><button class="' + (S.horModo === 'maestro' ? 'on' : '') + '" onclick="S.horModo=\'maestro\';S.horSel=null;pintarHorario()">Por maestro</button>' +
+    '<button class="' + (S.horModo === 'grupo' ? 'on' : '') + '" onclick="S.horModo=\'grupo\';pintarHorario()">Por grupo</button></div>';
+  if (S.horModo === 'maestro') { $('#perCuerpo').innerHTML = modo + '<div id="horM"></div>'; return S.horSel ? pintarMaestro(S.horSel) : listaMaestros(); }
   const H = S.hor, nombres = {};
   H.personas.forEach((p) => { nombres[p.id] = p.nombre; });
   const d = { modulos: H.modulos, grupos: H.grupos, clases: H.clases.filter((c) => c.dia === S.horDia).map((c) => Object.assign({}, c, { maestro: nombres[c.idPersona] || '', estado: c.idPersona ? 'OK' : 'SIN_ASIGNAR' })) };
-  $('#perCuerpo').innerHTML = '<div class="chips" style="margin-bottom:10px">' + ['Lun', 'Mar', 'Mié', 'Jue', 'Vie'].map((t, i) =>
+  $('#perCuerpo').innerHTML = modo + '<div class="chips" style="margin-bottom:10px">' + DIAS_C.slice(1).map((t, i) =>
     '<button class="chip-g' + (S.horDia === i + 1 ? ' on' : '') + '" onclick="S.horDia=' + (i + 1) + ';pintarHorario()">' + t + '</button>').join('') + '</div>' +
-    '<div class="tenue" style="margin-bottom:8px">Toca una clase para cambiar la materia o el maestro. Para una ausencia temporal usa una suplencia; el horario no cambia.</div>' +
-    rejillaClases(d, S.horDia) + '<div class="acciones"><button onclick="imprimirFirmasSemana()">Imprimir semana en blanco</button></div>';
+    (puede('editarHorario') ? '<div class="tenue" style="margin-bottom:8px">Toca una clase para cambiar la materia o el maestro.</div>' : '') +
+    rejillaClases(d, puede('editarHorario') ? S.horDia : 0) + '<div class="acciones"><button onclick="imprimirFirmasSemana()">Imprimir semana en blanco</button></div>';
+}
+/** Clases de un maestro agrupadas por grupo y materia. */
+function bloquesMaestro(id) {
+  const B = {};
+  S.hor.clases.filter((c) => c.idPersona === id).forEach((c) => {
+    const k = c.grupo + '|' + c.asignatura;
+    (B[k] = B[k] || { grupo: c.grupo, asignatura: c.asignatura, clases: [] }).clases.push(c);
+  });
+  return Object.values(B).sort((a, b) => a.grupo.localeCompare(b.grupo) || a.asignatura.localeCompare(b.asignatura))
+    .map((b) => { b.clases.sort((x, y) => x.dia - y.dia || x.ini.localeCompare(y.ini)); return b; });
+}
+function listaMaestros(q) {
+  const n = (x) => String(x || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const H = S.hor;
+  const horas = {}; H.clases.forEach((c) => { if (c.idPersona) horas[c.idPersona] = (horas[c.idPersona] || 0) + 1; });
+  const sinAsignar = H.clases.filter((c) => !c.idPersona).length;
+  const lista = H.personas.filter((p) => p.activo && (p.puesto === 'Docente' || horas[p.id]) && (!q || n(p.nombre).indexOf(n(q)) >= 0));
+  const el = $('#horM');
+  el.innerHTML = (sinAsignar ? '<div class="aviso">Hay ' + sinAsignar + ' clase(s) sin maestro asignado. Las ves en rojo en "Por grupo".</div>' : '') +
+    '<input id="horQ" placeholder="Buscar maestro" value="' + esc(q || '') + '" oninput="listaMaestros(this.value)" style="margin-bottom:8px">' +
+    '<div id="horL">' + (lista.map((p) => {
+      const bl = bloquesMaestro(p.id);
+      return '<div class="card maestro" onclick="pintarMaestro(\'' + esc(p.id) + '\')"><div class="fila"><span class="ini">' + esc(iniciales(p.nombre).toUpperCase()) + '</span>' +
+        '<span class="crece"><b>' + esc(p.nombre) + '</b><br><span class="tenue">' + (horas[p.id] || 0) + ' horas por semana</span></span><span class="tenue">›</span></div>' +
+        (bl.length ? '<div class="gchips">' + bl.map((b) => '<span>' + fG(b.grupo) + ' <small>' + esc(abrevMat(b.asignatura)) + '</small></span>').join('') + '</div>' : '<div class="tenue" style="margin-top:6px">Sin grupos asignados</div>') + '</div>';
+    }).join('') || '<div class="tenue">Sin resultados.</div>') + '</div>';
+  if (q !== undefined) { const i = $('#horQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+}
+function abrevMat(m) { const t = String(m || ''); return t.length > 9 ? t.slice(0, 4) + '.' : t; }
+function pintarMaestro(id) {
+  S.horSel = id;
+  if (!$('#horM')) { pintarHorario(); return; }
+  const p = S.hor.personas.find((x) => x.id === id) || { nombre: id };
+  const bl = bloquesMaestro(id), ed = puede('editarHorario');
+  const total = bl.reduce((a, b) => a + b.clases.length, 0);
+  $('#horM').innerHTML = '<button class="chico" style="border:0;padding-left:0" onclick="S.horSel=null;pintarHorario()">‹ Todos los maestros</button>' +
+    '<div class="card"><b style="font-size:17px">' + esc(p.nombre) + '</b><div class="tenue">' + total + ' horas por semana · ' + bl.length + ' grupo(s)</div>' +
+    (ed ? '' : '<div class="tenue" style="margin-top:6px">Solo dirección y subdirección pueden cambiar sus grupos.</div>') + '</div>' +
+    bl.map((b, i) => '<div class="card bloque"><div class="fila"><span class="gbadge">' + fG(b.grupo) + '</span><span class="crece"><b>' + esc(b.asignatura) + '</b><br>' +
+      '<span class="tenue">' + b.clases.length + ' hora(s) por semana</span></span></div>' +
+      '<div class="horas">' + b.clases.map((c) => '<span class="hora">' + DIAS_C[c.dia] + ' ' + h12(c.ini) +
+        (ed ? '<button title="Quitar esta hora" onclick="quitarHora(' + c.dia + ',\'' + c.ini + '\',\'' + esc(c.grupo) + '\',\'' + esc(c.asignatura) + '\')">×</button>' : '') + '</span>').join('') + '</div>' +
+      (ed ? '<div class="acciones"><button class="chico" onclick="formPasarGrupo(' + i + ')">Pasar a otro maestro</button><button class="chico peligro" onclick="quitarGrupo(' + i + ')">Ya no da este grupo</button></div>' : '') + '</div>').join('') +
+    (bl.length ? '' : '<div class="tenue">No tiene grupos asignados.</div>') +
+    (ed ? '<button class="prim ancho" style="margin-top:6px" onclick="formAgregarClases()">' + svg('mas', 18) + ' Agregar grupo u hora</button>' : '');
+}
+async function guardarCambiosHorario(cambios, msg) {
+  try {
+    await api('apiGuardarClases', cambios);
+    cerrar(); toast(msg);
+    S.hor = await api('apiHorario'); pintarHorario();
+  } catch (e) { error(e); }
+}
+function quitarHora(dia, ini, g, asig) {
+  if (!confirm('¿Quitar ' + DIAS_C[dia] + ' ' + h12(ini) + ' de ' + fG(g) + '? La hora queda sin maestro asignado.')) return;
+  guardarCambiosHorario([{ dia: dia, ini: ini, grupo: g, asignatura: asig, idPersona: '' }], 'Hora quitada.');
+}
+function quitarGrupo(i) {
+  const b = bloquesMaestro(S.horSel)[i];
+  if (!confirm('¿Ya no da ' + b.asignatura + ' en ' + fG(b.grupo) + '? Sus ' + b.clases.length + ' horas quedan sin maestro asignado.')) return;
+  guardarCambiosHorario(b.clases.map((c) => ({ dia: c.dia, ini: c.ini, grupo: c.grupo, asignatura: c.asignatura, idPersona: '' })), 'Grupo quitado. Asígnalo a otro maestro.');
+}
+/** Horas en que un maestro ya tiene clase: {"dia|ini": grupo} */
+function ocupadoMaestro(id) { const o = {}; S.hor.clases.forEach((c) => { if (c.idPersona === id) o[c.dia + '|' + c.ini] = c.grupo; }); return o; }
+function formPasarGrupo(i) {
+  const b = bloquesMaestro(S.horSel)[i];
+  S.pasar = b;
+  modal('<h2>Pasar ' + fG(b.grupo) + ' · ' + esc(b.asignatura) + '</h2><div class="tenue">' + b.clases.map((c) => DIAS_C[c.dia] + ' ' + h12(c.ini)).join(', ') + '</div>' +
+    '<label>¿Quién lo da ahora?</label><select id="pNuevo" onchange="revisarChoques()"><option value="">Selecciona…</option>' +
+    S.hor.personas.filter((p) => p.activo && p.id !== S.horSel && (p.puesto === 'Docente' || !p.puesto)).map((p) => '<option value="' + esc(p.id) + '">' + esc(p.nombre) + '</option>').join('') + '</select>' +
+    '<div id="pChoque"></div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="pBtn" onclick="guardarPasar()">Guardar</button></div>');
+}
+function revisarChoques() {
+  const id = $('#pNuevo').value, o = id ? ocupadoMaestro(id) : {};
+  const ch = S.pasar.clases.filter((c) => o[c.dia + '|' + c.ini]);
+  $('#pChoque').innerHTML = ch.length ? '<div class="aviso err">Ya tiene clase: ' + ch.map((c) => DIAS_C[c.dia] + ' ' + h12(c.ini) + ' (' + fG(o[c.dia + '|' + c.ini]) + ')').join(', ') +
+    '. Esas horas no se pueden pasar.</div>' : (id ? '<div class="aviso info">Está libre en todas esas horas.</div>' : '');
+  $('#pBtn').disabled = !!ch.length;
+}
+function guardarPasar() {
+  const id = $('#pNuevo').value;
+  if (!id) return toast('Selecciona al maestro.', 'err');
+  guardarCambiosHorario(S.pasar.clases.map((c) => ({ dia: c.dia, ini: c.ini, grupo: c.grupo, asignatura: c.asignatura, idPersona: id })), 'Grupo pasado al nuevo maestro.');
+}
+function formAgregarClases() {
+  const H = S.hor;
+  const materias = Array.from(new Set(H.clases.map((x) => x.asignatura).filter(Boolean))).sort();
+  S.agSel = {};
+  modal('<h2>Agregar grupo u hora</h2><label>Grupo</label><select id="aGru" onchange="S.agSel={};pintarHuecos()">' + H.grupos.map((g) => '<option value="' + esc(g) + '">' + fG(g) + '</option>').join('') + '</select>' +
+    '<label>Materia</label><input id="aMat" list="aMats" placeholder="Ej. MATEMÁTICAS"><datalist id="aMats">' + materias.map((m) => '<option value="' + esc(m) + '">').join('') + '</datalist>' +
+    '<span class="etiq">Toca las horas que dará</span><div id="aHuecos"></div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" onclick="guardarAgregar()">Guardar</button></div>');
+  pintarHuecos();
+}
+function pintarHuecos() {
+  const H = S.hor, g = $('#aGru').value, yo = ocupadoMaestro(S.horSel), nombres = {};
+  H.personas.forEach((p) => { nombres[p.id] = p.nombre; });
+  const clase = {}; H.clases.forEach((c) => { if (c.grupo === g) clase[c.dia + '|' + c.ini] = c; });
+  $('#aHuecos').innerHTML = '<div class="scroll"><table class="tabla huecos"><tr><th></th>' + DIAS_C.slice(1).map((d) => '<th>' + d + '</th>').join('') + '</tr>' +
+    H.modulos.map((m) => '<tr><td><b>' + h12(m.ini) + '</b></td>' + [1, 2, 3, 4, 5].map((d) => {
+      const k = d + '|' + m.ini, c = clase[k];
+      if (yo[k] === g) return '<td class="h-mio">Ya la da</td>';
+      if (yo[k]) return '<td class="h-no">Tiene ' + fG(yo[k]) + '</td>';
+      if (c && c.idPersona) return '<td class="h-no">' + esc(abrevMat(c.asignatura)) + '<br>' + esc(corto(nombres[c.idPersona] || '').split(' ')[0]) + '</td>';
+      return '<td class="h-libre' + (S.agSel[k] ? ' on' : '') + '" onclick="S.agSel[\'' + k + '\']=!S.agSel[\'' + k + '\'];pintarHuecos()">' + (S.agSel[k] ? '✓' : c ? esc(abrevMat(c.asignatura)) + '<br>libre' : 'Libre') + '</td>';
+    }).join('') + '</tr>').join('') + '</table></div><div class="tenue" style="margin-top:6px">Solo puedes elegir horas en que el grupo no tiene maestro y el maestro está libre.</div>';
+}
+function guardarAgregar() {
+  const g = $('#aGru').value, mat = $('#aMat').value.trim();
+  const ks = Object.keys(S.agSel).filter((k) => S.agSel[k]);
+  if (!mat) return toast('Escribe la materia.', 'err');
+  if (!ks.length) return toast('Toca al menos una hora.', 'err');
+  guardarCambiosHorario(ks.map((k) => ({ dia: +k.split('|')[0], ini: k.split('|')[1], grupo: g, asignatura: mat, idPersona: S.horSel })), ks.length + ' hora(s) agregada(s).');
 }
 function editarClase(dia, ini, g) {
   const H = S.hor;
