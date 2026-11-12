@@ -8,7 +8,7 @@
  */
 
 const TZ = 'America/Mexico_City';
-const VERSION = '2.0';
+const VERSION = '2.2';
 
 const HOJAS = {
   Config: ['Clave', 'Valor', 'Descripcion'],
@@ -45,6 +45,9 @@ const CONFIG_DEF = [
   ['UMBRAL_RETARDOS', '3', 'Retardos en la ventana para marcar patrón'],
   ['PLAZO_JUSTIFICAR', '3', 'Días hábiles para justificar una falta'],
   ['GOOGLE_CLIENT_ID', '', 'ID de cliente OAuth de Google Cloud para iniciar sesión'],
+  ['INICIO_CICLO', '', 'Primer día de clases del ciclo (aaaa-mm-dd)'],
+  ['FIN_CICLO', '', 'Último día de clases del ciclo (aaaa-mm-dd)'],
+  ['DIAS_SIN_CONEXION', '14', 'Días que se aceptan registros capturados sin internet'],
 ];
 
 const ROLES = ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO', 'TRABAJO_SOCIAL', 'SECRETARIA'];
@@ -58,6 +61,12 @@ const PERMISOS = {
   justificar: ['ADMIN', 'TRABAJO_SOCIAL'],
   seguimiento: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'PREFECTO', 'TRABAJO_SOCIAL'],
   alumnos: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'],
+  calendario: ['ADMIN', 'DIRECTOR', 'SUBDIRECTOR', 'SECRETARIA'],
+};
+
+const TIPOS_SIN_CLASE = {
+  FESTIVO: 'Día festivo', SUSPENSION: 'Suspensión de labores', CTE: 'Consejo Técnico Escolar',
+  VACACIONES: 'Vacaciones', FIESTA_PATRONAL: 'Fiesta patronal', CAMBIO_ACTIVIDAD: 'Cambio de actividad', OTRO: 'Otro',
 };
 
 const ESTADOS = { P: 'Presente', F: 'Falta', R: 'Retardo', J: 'Falta justificada', S: 'Salió temprano' };
@@ -74,6 +83,9 @@ const ACCIONES = {
   apiRegistrarSeguimiento: apiRegistrarSeguimiento, apiBuscarAlumnos: apiBuscarAlumnos, apiAlumno: apiAlumno,
   apiGuardarAlumno: apiGuardarAlumno, apiMoverAlumno: apiMoverAlumno, apiGuardarContacto: apiGuardarContacto,
   apiConcentrado: apiConcentrado, apiExportarConcentrado: apiExportarConcentrado,
+  apiCalendario: apiCalendario, apiMarcarSinClase: apiMarcarSinClase, apiQuitarSinClase: apiQuitarSinClase,
+  apiGuardarCiclo: apiGuardarCiclo,
+  apiDatosSinConexion: apiDatosSinConexion,
 };
 
 let _correoActual = null;
@@ -231,16 +243,39 @@ function validarFecha_(f, etiqueta) {
   return f;
 }
 
+/** Días sin clase de la pestaña Calendario, más el inicio y fin del ciclo (_ini, _fin). */
 function diasSinClase_() {
   const s = {};
   tabla_('Calendario').forEach(function (r) { if (r.Fecha) s[r.Fecha] = r.Tipo || 'Sin clase'; });
+  const c = config_();
+  s._ini = /^\d{4}-\d{2}-\d{2}$/.test(c.INICIO_CICLO || '') ? c.INICIO_CICLO : '';
+  s._fin = /^\d{4}-\d{2}-\d{2}$/.test(c.FIN_CICLO || '') ? c.FIN_CICLO : '';
   return s;
 }
 
 function esHabil_(f, sin) {
   sin = sin || diasSinClase_();
   const d = parseF_(f).getDay();
+  if (sin._ini && f < sin._ini) return false;
+  if (sin._fin && f > sin._fin) return false;
   return d !== 0 && d !== 6 && !sin[f];
+}
+
+/**
+ * Fecha en la que se registra algo. Por defecto hoy. Un día anterior solo lo puede registrar dirección,
+ * o cualquier usuario si lo capturó sin internet ese mismo día (hasta DIAS_SIN_CONEXION días después).
+ */
+function fechaTrabajo_(u, fecha, sinConexion) {
+  const hoy = hoy_();
+  if (!fecha || fecha === hoy) return hoy;
+  validarFecha_(fecha);
+  if (fecha > hoy) throw new Error('No se puede registrar una fecha futura.');
+  if (tiene_(u, 'corregirPasado')) return fecha;
+  const limite = num_(config_(), 'DIAS_SIN_CONEXION', 14);
+  const dias = Math.round((parseF_(hoy) - parseF_(fecha)) / 86400000);
+  if (sinConexion && dias <= limite) return fecha;
+  if (sinConexion) throw new Error('Este registro se capturó sin internet hace ' + dias + ' días; el límite es ' + limite + '. Pide a dirección que lo capture.');
+  throw new Error('Solo dirección puede registrar días anteriores.');
 }
 
 /** Los últimos n días hábiles que terminan en "fin" (incluido si es hábil). */
@@ -359,7 +394,111 @@ function apiInicio() {
     hoy: hoy_(),
     ahora: ahora_(),
     habilHoy: esHabil_(hoy_()),
+    calendario: calendario_(),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* API: calendario escolar                                             */
+/* ------------------------------------------------------------------ */
+
+function calendario_() {
+  const c = config_();
+  return {
+    ciclo: c.CICLO, inicio: c.INICIO_CICLO || '', fin: c.FIN_CICLO || '', tipos: TIPOS_SIN_CLASE,
+    dias: tabla_('Calendario').filter(function (r) { return r.Fecha; })
+      .map(function (r) { return { fecha: r.Fecha, tipo: r.Tipo || 'OTRO', descripcion: r.Descripcion }; })
+      .sort(function (a, b) { return a.fecha.localeCompare(b.fecha); }),
+  };
+}
+
+function apiCalendario() {
+  requiere_('ver');
+  return calendario_();
+}
+
+/** d: {inicio, fin, tipo, descripcion}. Marca sin clase cada día de lunes a viernes del rango. */
+function apiMarcarSinClase(d) {
+  const u = requiere_('calendario');
+  const ini = validarFecha_(d.inicio, 'inicio');
+  const fin = validarFecha_(d.fin || d.inicio, 'fin');
+  if (fin < ini) throw new Error('La fecha final no puede ser antes de la inicial.');
+  const tipo = TIPOS_SIN_CLASE[d.tipo] ? d.tipo : 'OTRO';
+  const desc = String(d.descripcion || '').trim().slice(0, 120) || TIPOS_SIN_CLASE[tipo];
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const ya = {};
+    tabla_('Calendario').forEach(function (r) { ya[r.Fecha] = r; });
+    const nuevos = [];
+    const x = parseF_(ini), f = parseF_(fin);
+    let vueltas = 0;
+    while (x <= f && vueltas < 400) {
+      const s = fmtF_(x);
+      const dia = x.getDay();
+      if (dia !== 0 && dia !== 6) {
+        if (ya[s]) actualizar_('Calendario', ya[s]._fila, { Tipo: tipo, Descripcion: desc });
+        else nuevos.push({ Fecha: s, Tipo: tipo, Descripcion: desc });
+      }
+      x.setDate(x.getDate() + 1);
+      vueltas++;
+    }
+    agregar_('Calendario', nuevos);
+    const fechas = {};
+    nuevos.forEach(function (n) { fechas[n.Fecha] = true; });
+    const conRegistros = tabla_('Asistencias').filter(function (r) { return fechas[r.Fecha]; }).length;
+    log_(u, 'CALENDARIO', 'Sin clase ' + ini + ' a ' + fin + ' (' + tipo + ')');
+    return { agregados: nuevos.length, conRegistros: conRegistros, calendario: calendario_() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Vuelve a ser día de clase. */
+function apiQuitarSinClase(fecha) {
+  const u = requiere_('calendario');
+  validarFecha_(fecha);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    _cache = {};
+    const filas = tabla_('Calendario').filter(function (r) { return r.Fecha === fecha; })
+      .map(function (r) { return r._fila; }).sort(function (a, b) { return b - a; });
+    if (!filas.length) throw new Error('Ese día no estaba marcado sin clase.');
+    const s = sh_('Calendario');
+    filas.forEach(function (f) { s.deleteRow(f); });
+    _cache = {};
+    log_(u, 'CALENDARIO', 'Hay clase el ' + fecha);
+    return { calendario: calendario_() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** d: {inicio, fin, ciclo?} */
+function apiGuardarCiclo(d) {
+  const u = requiere_('calendario');
+  const ini = validarFecha_(d.inicio, 'inicio');
+  const fin = validarFecha_(d.fin, 'fin');
+  if (fin <= ini) throw new Error('El fin del ciclo debe ser después del inicio.');
+  const valores = { INICIO_CICLO: ini, FIN_CICLO: fin };
+  if (d.ciclo && /^\d{4}-\d{4}$/.test(d.ciclo)) valores.CICLO = d.ciclo;
+  _cache = {};
+  const filas = {};
+  tabla_('Config').forEach(function (r) { filas[r.Clave] = r._fila; });
+  const nuevos = [];
+  Object.keys(valores).forEach(function (k) {
+    if (filas[k]) actualizar_('Config', filas[k], { Valor: valores[k] });
+    else {
+      const def = CONFIG_DEF.find(function (x) { return x[0] === k; });
+      nuevos.push({ Clave: k, Valor: valores[k], Descripcion: def ? def[2] : '' });
+    }
+  });
+  agregar_('Config', nuevos);
+  _cache = {};
+  log_(u, 'CICLO', ini + ' a ' + fin);
+  return { calendario: calendario_() };
 }
 
 /* ------------------------------------------------------------------ */
@@ -406,6 +545,20 @@ function apiListasDia(fecha) {
   return out;
 }
 
+/** Lo que el celular guarda para trabajar sin internet: listas del día y quién puede recoger a cada alumno (sin teléfonos). */
+function apiDatosSinConexion(fecha) {
+  requiere_('ver');
+  const listas = apiListasDia(fecha);
+  const activos = {};
+  tabla_('Alumnos').forEach(function (a) { if (a.Estatus === 'ACTIVO') activos[a.ID_Alumno] = true; });
+  const contactos = {};
+  tabla_('Contactos').forEach(function (c) {
+    if (!activos[c.ID_Alumno]) return;
+    (contactos[c.ID_Alumno] = contactos[c.ID_Alumno] || []).push({ id: c.ID_Contacto, nombre: c.Nombre, parentesco: c.Parentesco, autorizado: c.Autorizado });
+  });
+  return { listas: listas, contactos: contactos };
+}
+
 function justificadas_() {
   const m = {};
   tabla_('Justificaciones').forEach(function (j) {
@@ -430,11 +583,10 @@ function pendienteRetardo_(u, idAlumno, fecha, hora) {
  * items: [{id, estado: P|F|R, comentario}]
  * Los estados J (justificada) y S (salió) no se cambian desde la lista.
  */
-function apiGuardarLista(grupo, fecha, items) {
+function apiGuardarLista(grupo, fecha, items, opciones) {
   const u = requiere_('lista');
-  fecha = validarFecha_(fecha || hoy_());
-  if (fecha > hoy_()) throw new Error('No se puede pasar lista de una fecha futura.');
-  if (fecha !== hoy_() && !tiene_(u, 'corregirPasado')) throw new Error('Solo dirección puede corregir listas de días anteriores.');
+  const sinConexion = !!(opciones && opciones.sinConexion);
+  fecha = fechaTrabajo_(u, fecha, sinConexion);
   if (!esHabil_(fecha)) throw new Error('El ' + fecha + ' está marcado como día sin clase.');
 
   const lock = LockService.getScriptLock();
@@ -471,7 +623,7 @@ function apiGuardarLista(grupo, fecha, items) {
 
     agregar_('Asistencias', nuevos);
     agregar_('Seguimiento', seg);
-    log_(u, 'LISTA', grupo + ' ' + fecha + ': ' + nuevos.length + ' nuevos, ' + cambios + ' cambios');
+    log_(u, 'LISTA', grupo + ' ' + fecha + ': ' + nuevos.length + ' nuevos, ' + cambios + ' cambios' + (sinConexion ? ' (capturada sin internet)' : ''));
     return { ok: true, nuevos: nuevos.length, cambios: cambios, retardos: seg.length };
   } finally {
     lock.releaseLock();
@@ -479,18 +631,18 @@ function apiGuardarLista(grupo, fecha, items) {
 }
 
 /** Alumno que llega tarde después de pasar lista (o antes). Nunca se le niega la entrada. */
-function apiRetardo(idAlumno, hora, comentario) {
+function apiRetardo(idAlumno, hora, comentario, opciones) {
   const u = requiere_('lista');
   const a = alumno_(idAlumno);
-  const fecha = hoy_();
-  if (!esHabil_(fecha)) throw new Error('Hoy está marcado como día sin clase.');
+  const fecha = fechaTrabajo_(u, opciones && opciones.fecha, !!(opciones && opciones.sinConexion));
+  if (!esHabil_(fecha)) throw new Error('Ese día está marcado como día sin clase.');
   hora = /^\d{1,2}:\d{2}$/.test(String(hora || '')) ? hora : ahora_();
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
     _cache = {};
     const prev = registrosDia_(fecha)[idAlumno];
-    if (prev && prev.Estado === 'S') throw new Error('Este alumno ya tiene registrada su salida hoy.');
+    if (prev && prev.Estado === 'S') throw new Error('Este alumno ya tiene registrada su salida ese día.');
     if (prev) {
       actualizar_('Asistencias', prev._fila, { Estado: 'R', Hora_Llegada: hora, Comentario: comentario || prev.Comentario,
         Registro: u.email, Actualizado: sello_() });
@@ -572,8 +724,8 @@ function apiRegistrarSalida(d) {
   if (firma.indexOf('data:image/') !== 0) throw new Error('Falta la firma de quien recoge.');
   if (firma.length > 49000) throw new Error('La firma es demasiado grande. Bórrala y firma de nuevo.');
 
-  const fecha = hoy_();
-  if (!esHabil_(fecha)) throw new Error('Hoy está marcado como día sin clase.');
+  const fecha = fechaTrabajo_(u, d.fecha, !!d.sinConexion);
+  if (!esHabil_(fecha)) throw new Error('Ese día está marcado como día sin clase.');
   const hora = /^\d{1,2}:\d{2}$/.test(String(d.hora || '')) ? d.hora : ahora_();
   const puedeAprobar = tiene_(u, 'aprobarSalida');
   const estatus = (autorizado || puedeAprobar) ? 'COMPLETADA' : 'PENDIENTE_APROBACION';

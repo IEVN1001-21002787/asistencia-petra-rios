@@ -153,7 +153,9 @@ function buscarSel(q, bajas) {
   if (q.trim().length < 2) { $('#selRes').innerHTML = ''; return; }
   buscT = setTimeout(async () => {
     try {
-      const r = await api('apiBuscarAlumnos', q, '', bajas);
+      let r;
+      try { r = await api('apiBuscarAlumnos', q, '', bajas); }
+      catch (e) { if (!e.red) throw e; r = buscarLocal(q); }
       $('#selRes').innerHTML = r.length ? r.map((a) =>
         '<div class="res" onclick="_onPick(\'' + esc(a.id) + '\',\'' + esc(a.nombre.replace(/['\\]/g, '')) + '\',\'' + esc(a.grupo) + '\')"><b>' +
         esc(a.nombre) + '</b> <span class="tenue">' + esc(a.grupo) + '</span></div>').join('')
@@ -208,11 +210,19 @@ function formRetardo() {
 }
 async function guardarRetardo(id) {
   const b = $('#rBtn'); b.disabled = true;
+  const hora = $('#rHora').value, com = $('#rCom').value;
+  const enCola = () => {
+    encolar('apiRetardo', [id, hora, com, { fecha: S.ini.hoy, sinConexion: true }]);
+    marcarLocal(id, S.ini.hoy, { estado: 'R', hora: hora });
+    cerrar(); toast('Sin internet: el retardo quedó guardado en el celular y se enviará al volver la señal.');
+    if (S.vista === 'lista') vLista();
+  };
+  if (!navigator.onLine) return enCola();
   try {
-    const r = await api('apiRetardo', id, $('#rHora').value, $('#rCom').value);
+    const r = await api('apiRetardo', id, hora, com);
     cerrar(); toast('Retardo registrado: ' + r.nombre + ' a las ' + r.hora);
     if (S.vista === 'hoy') vHoy(); else if (S.vista === 'lista') vLista();
-  } catch (e) { b.disabled = false; error(e); }
+  } catch (e) { if (e.red) return enCola(); b.disabled = false; error(e); }
 }
 
 /* ---------------- Vista: Lista ---------------- */
@@ -225,9 +235,9 @@ async function vLista(grupo) {
     let d;
     try { d = await api('apiLista', S.listaGrupo, S.listaFecha); guardarListaLocal(d); }
     catch (e) {
-      d = e.red ? listaLocal(S.listaGrupo, S.listaFecha) : null;
+      d = e.red ? (listaLocal(S.listaGrupo, S.listaFecha) || listaDesdeAlumnos(S.listaGrupo, S.listaFecha)) : null;
       if (!d) throw e;
-      toast('Sin internet: se muestra la lista guardada en el celular.');
+      toast('Sin internet: puedes pasar lista; se enviará al volver la señal.');
     }
     S.lista = d;
     cab('Pasar lista · ' + fechaLarga(d.fecha), 'Grupo ' + d.grupo, '<div class="chips">' + S.ini.grupos.map((g) =>
@@ -235,7 +245,7 @@ async function vLista(grupo) {
     let h = '';
     if (puede('corregirPasado')) h += '<div class="fila" style="margin-bottom:10px"><label class="crece" style="margin:0">Fecha de la lista</label>' +
       '<input type="date" style="width:auto" value="' + d.fecha + '" max="' + S.ini.hoy + '" onchange="S.listaFecha=this.value;vLista()"></div>';
-    if (!d.habil) h += '<div class="aviso">Este día está marcado como día sin clase.</div>';
+    if (!d.habil) h += '<div class="aviso">Este día no hay clases' + motivoSinClase(d.fecha) + '.</div>';
     else if (d.pasada) h += '<div class="aviso info">La lista de este día ya está registrada. Puedes corregirla y volver a guardar.</div>';
     if (d.fecha !== S.ini.hoy) h += '<div class="aviso">Estás corrigiendo un día anterior. El cambio queda registrado.</div>';
     if (d.editable && d.habil) h += '<div class="fila" style="margin-bottom:10px"><span class="crece tenue">Todos inician presentes. Toca solo F o R.</span><button class="chico" onclick="todosPresentes()">Todos ✓</button></div>';
@@ -290,7 +300,7 @@ async function guardarLista() {
   const items = d.alumnos.filter((a) => a.estado !== 'J' && a.estado !== 'S')
     .map((a) => ({ id: a.id, estado: a.estado, comentario: a.comentario, hora: a.hora }));
   if (!navigator.onLine) {
-    encolar('apiGuardarLista', [d.grupo, d.fecha, items]);
+    encolar('apiGuardarLista', [d.grupo, d.fecha, items, { sinConexion: true }]);
     d.pasada = true; guardarListaLocal(d);
     toast('Sin internet: la lista quedó guardada en el celular y se enviará al volver la señal.');
     return;
@@ -302,7 +312,7 @@ async function guardarLista() {
     vLista();
   } catch (e) {
     if (e.red) {
-      encolar('apiGuardarLista', [d.grupo, d.fecha, items]);
+      encolar('apiGuardarLista', [d.grupo, d.fecha, items, { sinConexion: true }]);
       d.pasada = true; guardarListaLocal(d);
       toast('Se perdió la conexión. La lista se enviará al volver la señal.');
     } else error(e);
@@ -343,7 +353,13 @@ let FIRMA = null;
 async function pasoSalida(id, nombre, grupo) {
   $('#paso').innerHTML = '<div class="cargando">Cargando contactos…</div>';
   try {
-    const f = await api('apiAlumno', id);
+    let f;
+    try { f = await api('apiAlumno', id); }
+    catch (e) {
+      if (!e.red) throw e;
+      f = { alumno: { id: id, nombre: nombre, grupo: grupo }, contactos: contactosLocal(id) };
+      toast('Sin internet: la salida se guardará en el celular y se enviará al volver la señal.');
+    }
     const cs = f.contactos.slice().sort((a, b) => (b.autorizado === 'SI') - (a.autorizado === 'SI'));
     const aviso = puede('aprobarSalida') ? 'Esta persona no está autorizada. Al guardar, la salida queda aprobada por ti.'
       : 'Esta persona no está autorizada. La salida quedará pendiente hasta que el director o la subdirectora la aprueben.';
@@ -408,15 +424,24 @@ async function guardarSalida(id) {
   if (!$('#sMot').value) return toast('Selecciona el motivo.', 'err');
   if (FIRMA.vacia()) return toast('Falta la firma de quien recoge.', 'err');
   const b = $('#sBtn'); b.disabled = true; b.textContent = 'Guardando…';
+  const datos = { idAlumno: id, idContacto: r.value, recoge: r.value ? '' : $('#sNom').value,
+    parentesco: r.value ? '' : $('#sPar').value, motivo: $('#sMot').value, detalle: $('#sDet').value, hora: $('#sHora').value, firma: FIRMA.imagen() };
+  const enCola = () => {
+    encolar('apiRegistrarSalida', [Object.assign({}, datos, { fecha: S.ini.hoy, sinConexion: true })]);
+    if (r.dataset.aut === 'SI') marcarLocal(id, S.ini.hoy, { estado: 'S', horaSalida: datos.hora });
+    modal('<h2>Salida guardada en el celular</h2><div class="aviso">No hay internet. La salida y la firma se enviarán solas al volver la señal.' +
+      (r.dataset.aut === 'SI' ? '' : ' Como quien recoge no está autorizado, dirección deberá aprobarla después.') + '</div>' +
+      '<div class="acciones"><button class="prim" onclick="cerrar();refrescar()">Listo</button></div>');
+  };
+  if (!navigator.onLine) return enCola();
   try {
-    const res = await api('apiRegistrarSalida', { idAlumno: id, idContacto: r.value, recoge: r.value ? '' : $('#sNom').value,
-      parentesco: r.value ? '' : $('#sPar').value, motivo: $('#sMot').value, detalle: $('#sDet').value, hora: $('#sHora').value, firma: FIRMA.imagen() });
+    const res = await api('apiRegistrarSalida', datos);
     modal('<h2>' + (res.estatus === 'COMPLETADA' ? 'Salida registrada' : 'Salida pendiente de aprobación') + '</h2>' +
       (res.estatus === 'COMPLETADA' ? '<div class="aviso info">La lista del día ya muestra que el alumno salió.</div>' :
         '<div class="aviso">Avisa al director o a la subdirectora para que la aprueben en la pantalla Salidas.</div>') +
       '<div class="acciones"><button onclick="imprimirComprobante(\'' + esc(res.id) + '\')">Imprimir comprobante</button>' +
       '<button class="prim" onclick="cerrar();refrescar()">Listo</button></div>');
-  } catch (e) { b.disabled = false; b.textContent = 'Guardar salida'; error(e); }
+  } catch (e) { if (e.red) return enCola(); b.disabled = false; b.textContent = 'Guardar salida'; error(e); }
 }
 async function aprobarSalida(id) {
   try { await api('apiAprobarSalida', id); toast('Salida aprobada.'); refrescar(); }
@@ -698,7 +723,10 @@ async function segDesdeAlerta(id, resuelve, motivo) {
 function vReportes() {
   const q = S.rep || { grupo: S.ini.grupos[0], ini: quincena(S.ini.hoy)[0], fin: quincena(S.ini.hoy)[1] };
   S.rep = q;
-  $('#main').innerHTML = '<div class="card"><label>Grupo</label><select id="pGru" onchange="S.rep.grupo=this.value">' + opcionesGrupo(q.grupo) + '</select>' +
+  $('#main').innerHTML = '<div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:14px">' +
+    '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="vCalendario()">' + svg('hoy', 24) + 'Calendario escolar</button>' +
+    '<button class="grande" style="flex-direction:column;gap:4px;height:auto;padding:14px" onclick="formRespaldo()">' + svg('lista', 24) + 'Listas de respaldo</button></div>' +
+    '<h3 style="margin-top:0">Concentrado de asistencia</h3><div class="card"><label>Grupo</label><select id="pGru" onchange="S.rep.grupo=this.value">' + opcionesGrupo(q.grupo) + '</select>' +
     '<div class="fila"><div class="crece"><label>Desde</label><input id="pIni" type="date" value="' + q.ini + '" onchange="S.rep.ini=this.value"></div>' +
     '<div class="crece"><label>Hasta</label><input id="pFin" type="date" value="' + q.fin + '" onchange="S.rep.fin=this.value"></div></div>' +
     '<div class="acciones"><button class="chico" onclick="setQuincena(0)">Quincena actual</button><button class="chico" onclick="setQuincena(-1)">Quincena anterior</button></div>' +
@@ -748,6 +776,173 @@ async function exportar() {
   } catch (e) { error(e); }
 }
 
+/* ---------------- Calendario escolar ---------------- */
+const COLOR_TIPO = {
+  FESTIVO: ['#1B2559', '#FFFFFF'], SUSPENSION: ['#1B2559', '#FFFFFF'], CTE: ['#CFE0F7', '#173A80'],
+  VACACIONES: ['#BFE3F2', '#0B4F6C'], FIESTA_PATRONAL: ['#FDE8E8', '#C8202B'], CAMBIO_ACTIVIDAD: ['#FDEFC8', '#7A4A00'], OTRO: ['#E7E9F2', '#3E4460'],
+};
+async function vCalendario(mes) {
+  S.vista = 'reportes';
+  S.calMes = mes || S.calMes || S.ini.hoy.slice(0, 7);
+  cab('Ciclo ' + S.ini.config.ciclo, 'Calendario escolar');
+  if (!S.cal) {
+    cargando();
+    try { S.cal = await api('apiCalendario'); }
+    catch (e) { if (!(e.red && S.ini.calendario)) return errVista(e); S.cal = S.ini.calendario; }
+  }
+  pintarCalendario();
+}
+function actualizarCal(c) {
+  S.cal = c; S.ini.calendario = c;
+  try { localStorage.setItem('ini', JSON.stringify(S.ini)); } catch (e) {}
+  pintarCalendario();
+}
+function moverMes(n) {
+  const p = S.calMes.split('-').map(Number);
+  const d = new Date(p[0], p[1] - 1 + n, 1);
+  S.calMes = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  pintarCalendario();
+}
+function pintarCalendario() {
+  const c = S.cal, mapa = {};
+  c.dias.forEach((d) => { mapa[d.fecha] = d; });
+  const p = S.calMes.split('-').map(Number), y = p[0], m = p[1];
+  const primero = new Date(y, m - 1, 1).getDay(), total = new Date(y, m, 0).getDate();
+  const n2 = (x) => String(x).padStart(2, '0');
+  const edita = puede('calendario');
+  let celdas = '', clases = 0;
+  for (let i = 0; i < primero; i++) celdas += '<span></span>';
+  for (let dd = 1; dd <= total; dd++) {
+    const f = y + '-' + n2(m) + '-' + n2(dd), dsem = (primero + dd - 1) % 7, sc = mapa[f];
+    const fuera = (c.inicio && f < c.inicio) || (c.fin && f > c.fin);
+    let fondo = '#FFFFFF', color = 'var(--texto)', borde = 'transparent';
+    if (dsem === 0 || dsem === 6) { fondo = 'transparent'; color = '#9AA0B5'; }
+    else if (sc) { fondo = (COLOR_TIPO[sc.tipo] || COLOR_TIPO.OTRO)[0]; color = (COLOR_TIPO[sc.tipo] || COLOR_TIPO.OTRO)[1]; }
+    else if (fuera) { fondo = '#F0F1F5'; color = '#9AA0B5'; }
+    else clases++;
+    if (f === S.ini.hoy) borde = 'var(--oro)';
+    const clic = edita && dsem !== 0 && dsem !== 6 ? ' onclick="diaCal(\'' + f + '\')"' : '';
+    celdas += '<button type="button"' + clic + ' aria-label="' + f + (sc ? ', sin clase' : '') + '" style="height:44px;min-height:44px;padding:0;border-radius:10px;font-weight:700;font-size:14px;' +
+      'background:' + fondo + ';color:' + color + ';border:2px solid ' + borde + '">' + dd + '</button>';
+  }
+  const delMes = c.dias.filter((d) => d.fecha.slice(0, 7) === S.calMes);
+  const leyenda = Object.keys(c.tipos || {}).filter((t) => t !== 'SUSPENSION').map((t) =>
+    '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--tenue2)"><span style="width:14px;height:14px;border-radius:4px;background:' +
+    (COLOR_TIPO[t] || COLOR_TIPO.OTRO)[0] + '"></span>' + esc(t === 'FESTIVO' ? 'Festivo o suspensión' : c.tipos[t]) + '</span>').join('');
+  let h = '<button class="chico" onclick="ir(\'reportes\')">← Reportes</button>' +
+    '<div class="card" style="margin-top:12px"><div class="fila"><button class="chico" aria-label="Mes anterior" onclick="moverMes(-1)">‹</button>' +
+    '<b class="crece" style="text-align:center;font-family:var(--titulos);font-size:18px;text-transform:capitalize">' + MESES[m - 1] + ' ' + y + '</b>' +
+    '<button class="chico" aria-label="Mes siguiente" onclick="moverMes(1)">›</button></div>' +
+    '<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin-top:12px;text-align:center">' +
+    ['D', 'L', 'M', 'M', 'J', 'V', 'S'].map((x) => '<span class="tenue" style="font-weight:700">' + x + '</span>').join('') + celdas + '</div>' +
+    '<div class="tenue" style="margin-top:10px">' + clases + ' días de clase este mes' + (edita ? ' · toca un día para marcarlo o quitarlo' : '') + '</div></div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 12px">' + leyenda + '</div>';
+  if (delMes.length) h += '<div class="card" style="padding:2px 14px">' + delMes.map((d) =>
+    '<div class="mov"' + (edita ? ' onclick="diaCal(\'' + d.fecha + '\')"' : '') + '><span class="circ" style="background:' + (COLOR_TIPO[d.tipo] || COLOR_TIPO.OTRO)[0] + ';color:' +
+    (COLOR_TIPO[d.tipo] || COLOR_TIPO.OTRO)[1] + ';font-weight:700;font-size:13px">' + Number(d.fecha.slice(8)) + '</span>' +
+    '<div class="t"><b>' + esc(d.descripcion || c.tipos[d.tipo]) + '</b><span>' + esc(dia(d.fecha)) + ' · ' + esc((c.tipos || {})[d.tipo] || d.tipo) + '</span></div></div>').join('') + '</div>';
+  h += '<div class="card"><div class="fila"><span class="crece"><b>Ciclo ' + esc(c.ciclo || S.ini.config.ciclo) + '</b><br><span class="tenue">' +
+    (c.inicio ? 'Del ' + fF(c.inicio) + ' al ' + fF(c.fin) + ' · ' + diasDeClase(c) + ' días de clase' : 'Sin fechas de inicio y fin') + '</span></span>' +
+    (edita ? '<button class="chico" onclick="formCiclo()">Editar</button>' : '') + '</div></div>';
+  if (edita) h += '<button class="oro ancho grande" onclick="formSinClase()">' + svg('mas', 22) + 'Marcar varios días sin clase</button>';
+  $('#main').innerHTML = h;
+}
+function diasDeClase(c) {
+  if (!c.inicio || !c.fin) return 0;
+  const sin = {}; c.dias.forEach((d) => { sin[d.fecha] = true; });
+  const p = c.inicio.split('-').map(Number), x = new Date(p[0], p[1] - 1, p[2], 12);
+  let n = 0, vueltas = 0;
+  while (vueltas++ < 400) {
+    const f = x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+    if (f > c.fin) break;
+    if (x.getDay() !== 0 && x.getDay() !== 6 && !sin[f]) n++;
+    x.setDate(x.getDate() + 1);
+  }
+  return n;
+}
+function opcionesTipo(sel) {
+  const t = S.cal.tipos || {};
+  return Object.keys(t).map((k) => '<option value="' + k + '"' + (k === sel ? ' selected' : '') + '>' + esc(t[k]) + '</option>').join('');
+}
+function diaCal(f) {
+  const d = S.cal.dias.find((x) => x.fecha === f);
+  if (d) {
+    modal('<h2>' + esc(fechaLarga(f)) + '</h2><div class="aviso">Sin clase: ' + esc(d.descripcion || S.cal.tipos[d.tipo]) + ' (' + esc(S.cal.tipos[d.tipo] || d.tipo) + ')</div>' +
+      '<div class="acciones"><button onclick="cerrar()">Cerrar</button><button onclick="formSinClase(\'' + f + '\')">Cambiar motivo</button>' +
+      '<button class="prim" onclick="quitarSinClase(\'' + f + '\')">Sí hay clase</button></div>');
+  } else formSinClase(f);
+}
+function formSinClase(f) {
+  const d = f ? S.cal.dias.find((x) => x.fecha === f) : null;
+  const ini = f || S.ini.hoy;
+  modal('<h2>Día sin clase</h2><div class="tenue">Los sábados y domingos no cuentan; se marcan solo los días de lunes a viernes del rango.</div>' +
+    '<div class="fila"><div class="crece"><label>Desde</label><input id="cIni" type="date" value="' + ini + '"></div>' +
+    '<div class="crece"><label>Hasta</label><input id="cFin" type="date" value="' + ini + '"></div></div>' +
+    '<label>Motivo</label><select id="cTipo">' + opcionesTipo(d ? d.tipo : 'FIESTA_PATRONAL') + '</select>' +
+    '<label>Descripción</label><input id="cDesc" maxlength="120" placeholder="Ej. Fiesta patronal de Romita, desfile, jornada deportiva" value="' + esc(d ? d.descripcion : '') + '">' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="cBtn" onclick="guardarSinClase()">Guardar</button></div>');
+}
+async function guardarSinClase() {
+  const b = $('#cBtn'); b.disabled = true;
+  try {
+    const r = await api('apiMarcarSinClase', { inicio: $('#cIni').value, fin: $('#cFin').value || $('#cIni').value, tipo: $('#cTipo').value, descripcion: $('#cDesc').value });
+    cerrar(); actualizarCal(r.calendario);
+    toast((r.agregados ? r.agregados + ' día(s) marcados sin clase.' : 'Motivo actualizado.') +
+      (r.conRegistros ? ' Ojo: ya había ' + r.conRegistros + ' registros de asistencia esos días; se conservan.' : ''));
+  } catch (e) { b.disabled = false; error(e); }
+}
+async function quitarSinClase(f) {
+  try { const r = await api('apiQuitarSinClase', f); cerrar(); actualizarCal(r.calendario); toast('Listo: el ' + fF(f) + ' sí hay clase.'); }
+  catch (e) { error(e); }
+}
+function formCiclo() {
+  const c = S.cal;
+  modal('<h2>Ciclo escolar</h2><label>Nombre del ciclo</label><input id="yCic" value="' + esc(c.ciclo || S.ini.config.ciclo) + '" placeholder="2026-2027">' +
+    '<div class="fila"><div class="crece"><label>Primer día de clases</label><input id="yIni" type="date" value="' + esc(c.inicio) + '"></div>' +
+    '<div class="crece"><label>Último día de clases</label><input id="yFin" type="date" value="' + esc(c.fin) + '"></div></div>' +
+    '<div class="tenue" style="margin-top:8px">Fuera de estas fechas no se pasa lista ni cuentan faltas.</div>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="yBtn" onclick="guardarCiclo()">Guardar</button></div>');
+}
+async function guardarCiclo() {
+  const b = $('#yBtn'); b.disabled = true;
+  try { const r = await api('apiGuardarCiclo', { inicio: $('#yIni').value, fin: $('#yFin').value, ciclo: $('#yCic').value }); cerrar(); actualizarCal(r.calendario); toast('Ciclo actualizado.'); }
+  catch (e) { b.disabled = false; error(e); }
+}
+
+/* ---------------- Listas de respaldo en papel ---------------- */
+function siguientesHabiles(desde, n) {
+  const out = [], p = desde.split('-').map(Number), x = new Date(p[0], p[1] - 1, p[2], 12);
+  let vueltas = 0;
+  while (out.length < n && vueltas++ < 120) {
+    const f = x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+    if (habilLocal(f)) out.push(f);
+    x.setDate(x.getDate() + 1);
+  }
+  return out;
+}
+function formRespaldo() {
+  modal('<h2>Listas de respaldo</h2><div class="aviso info">Imprímelas con anticipación y guárdalas en la prefectura. Si un día no hay luz ni internet, se pasa lista en papel y después se captura en la app.</div>' +
+    '<label>A partir del</label><input id="bIni" type="date" value="' + S.ini.hoy + '">' +
+    '<label>Días de clase por hoja</label><select id="bDias"><option value="5">5 (una semana)</option><option value="10" selected>10 (dos semanas)</option><option value="15">15 (tres semanas)</option></select>' +
+    '<div class="acciones"><button onclick="cerrar()">Cancelar</button><button class="prim" id="bBtn" onclick="imprimirRespaldo()">Imprimir los ' + S.ini.grupos.length + ' grupos</button></div>');
+}
+async function imprimirRespaldo() {
+  const dias = siguientesHabiles($('#bIni').value, Number($('#bDias').value));
+  if (!dias.length) return toast('No hay días de clase en ese periodo.', 'err');
+  const b = $('#bBtn'); b.disabled = true; b.textContent = 'Preparando…';
+  try {
+    const todas = await Promise.all(S.ini.grupos.map((g) => api('apiConcentrado', g, dias[0], dias[dias.length - 1])));
+    const pag = (c) => '<div class="pagina">' + encabezadoDoc() + '<h3 style="text-align:center;margin:8px 0">Lista de respaldo · Grupo ' + esc(c.grupo) + '</h3>' +
+      '<p style="text-align:center;font-size:10px;margin:0 0 6px">Usar solo si no hay luz o internet. Anotar • presente, F falta, R retardo (con hora), S salida (con hora). Capturar en la app al volver.</p>' +
+      '<table class="tabla"><tr><th>#</th><th class="izq">Alumno</th>' + dias.map((f) => '<th>' + dia(f).slice(0, 2) + '<br>' + fC(f) + '</th>').join('') + '</tr>' +
+      c.filas.filter((f) => f.activo).map((f, i) => '<tr><td>' + (i + 1) + '</td><td class="izq" style="white-space:nowrap">' + esc(f.nombre) + '</td>' +
+        dias.map(() => '<td style="width:34px;height:20px"></td>').join('') + '</tr>').join('') + '</table>' +
+      '<div class="firmas"><div>Prefecto(a)</div><div>Capturado en la app (fecha y firma)</div></div></div>';
+    cerrar();
+    imprimir('<style>@page{size:landscape;margin:10mm}</style>' + todas.map(pag).join(''));
+  } catch (e) { b.disabled = false; b.textContent = 'Imprimir'; error(e); }
+}
+
 /* ---------------- Datos guardados en el celular ---------------- */
 function guardarListaLocal(d) { try { localStorage.setItem('lista:' + d.grupo + ':' + d.fecha, JSON.stringify(d)); } catch (e) {} }
 function listaLocal(g, f) { try { return JSON.parse(localStorage.getItem('lista:' + g + ':' + f) || 'null'); } catch (e) { return null; } }
@@ -759,8 +954,13 @@ function fechaDispositivo() {
 async function precargarListas() {
   if (!puede('lista')) return;
   try {
-    const todas = await api('apiListasDia', S.ini.hoy);
-    Object.keys(todas).forEach((g) => guardarListaLocal(todas[g]));
+    const datos = await api('apiDatosSinConexion', S.ini.hoy);
+    const todas = datos.listas;
+    Object.keys(todas).forEach((g) => {
+      guardarListaLocal(todas[g]);
+      guardarLocal('alumnos:' + g, todas[g].alumnos.map((a) => ({ id: a.id, nombre: a.nombre })));
+    });
+    guardarLocal('contactos', datos.contactos);
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
       if (k && k.indexOf('lista:') === 0 && k.slice(-10) < S.ini.hoy) localStorage.removeItem(k);
@@ -769,8 +969,59 @@ async function precargarListas() {
 }
 function errVista(e) {
   $('#main').innerHTML = e && e.red
-    ? '<div class="aviso">Sin internet. Puedes pasar lista desde la pestaña Lista con los datos guardados en el celular; se enviará al volver la señal.</div>'
+    ? '<div class="aviso"><b>Sin internet.</b> Puedes pasar lista, registrar retardos y salidas: todo se guarda en el celular y se envía solo al volver la señal.</div>' +
+      (puede('lista') ? '<button class="prim ancho grande" onclick="ir(\'lista\')">' + svg('lista', 22) + 'Pasar lista</button><div style="height:8px"></div>' +
+        '<button class="oro ancho grande" onclick="formRetardo()">' + svg('reloj', 22) + 'Registrar llegada tarde</button>' : '')
     : '<div class="aviso err">' + esc((e && e.message) || e) + '</div>';
+}
+function guardarLocal(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+function leerLocal(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+function contactosLocal(id) { return ((leerLocal('contactos') || {})[id]) || []; }
+/** Si no hay internet y no hay lista guardada de ese día, se arma con los alumnos que el celular ya conoce. */
+function listaDesdeAlumnos(grupo, fecha) {
+  const al = leerLocal('alumnos:' + grupo);
+  if (!al) return null;
+  return { grupo: grupo, fecha: fecha, habil: habilLocal(fecha), pasada: false, editable: puede('lista'), local: true,
+    alumnos: al.map((a) => ({ id: a.id, nombre: a.nombre, estado: 'P', hora: '', horaSalida: '', comentario: '' })) };
+}
+function buscarLocal(q) {
+  const t = q.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/).filter(Boolean);
+  const out = [];
+  S.ini.grupos.forEach((g) => (leerLocal('alumnos:' + g) || []).forEach((a) => {
+    const n = a.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (t.every((p) => n.indexOf(p) >= 0)) out.push({ id: a.id, nombre: a.nombre, grupo: g, estatus: 'ACTIVO' });
+  }));
+  return out.slice(0, 30);
+}
+/** Refleja en la lista guardada un retardo o salida capturado sin internet. */
+function marcarLocal(id, fecha, cambio) {
+  S.ini.grupos.forEach((g) => {
+    const d = listaLocal(g, fecha) || listaDesdeAlumnos(g, fecha);
+    if (!d) return;
+    const a = d.alumnos.find((x) => x.id === id);
+    if (!a) return;
+    Object.assign(a, cambio);
+    guardarListaLocal(d);
+  });
+}
+function habilLocal(f) {
+  const c = S.ini.calendario || { dias: [] };
+  const p = f.split('-').map(Number);
+  const dsem = new Date(p[0], p[1] - 1, p[2]).getDay();
+  if (dsem === 0 || dsem === 6) return false;
+  if (c.inicio && f < c.inicio) return false;
+  if (c.fin && f > c.fin) return false;
+  return !c.dias.some((d) => d.fecha === f);
+}
+function motivoSinClase(f) {
+  const c = S.ini.calendario || { dias: [], tipos: {} };
+  const d = c.dias.find((x) => x.fecha === f);
+  if (d) return ': ' + (d.descripcion || (c.tipos || {})[d.tipo] || 'sin clase');
+  const p = f.split('-').map(Number), dsem = new Date(p[0], p[1] - 1, p[2]).getDay();
+  if (dsem === 0 || dsem === 6) return ' (fin de semana)';
+  if (c.inicio && f < c.inicio) return ' (antes del inicio del ciclo)';
+  if (c.fin && f > c.fin) return ' (después del fin del ciclo)';
+  return '';
 }
 
 /* ---------------- Sesión con Google ---------------- */
